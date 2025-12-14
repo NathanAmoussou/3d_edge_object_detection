@@ -1,0 +1,8 @@
+IDENTIFICATION ET MOT DE PASSE : test
+connexion sans ecran :
+ssh test@192.168.55.1
+ou
+utiliser putty et se connecter au port de votre ordinateur (moi c est le COM6)
+
+pour internet : allez dans votre panneau de configuration de reseau  (windows + r puis tapez ncpa.cpl sur windows 11)
+cliquez sur votre connexion et partager à la connexion internet de la orin (Remote NDIS ou L4T-README)
