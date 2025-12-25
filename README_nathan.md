@@ -18,7 +18,7 @@ Faut mettre au clair aussi les optims qu'on fera et les métriques qu'on mesurer
 
 ## Partie A - Gazebo
 
-- Fine-tuner YoloV11n avec le cube.
+- Fine-tuner YoloV11n avec le cube. On va utiliser CVAT AI.
 - Tester que la caméra peut en effet détecter le cube et la profondeur.
 - Demander à Noé quoi faire par rapport à Gazebo une fois que le modèle fonctionne.
 

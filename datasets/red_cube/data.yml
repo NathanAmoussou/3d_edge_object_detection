@@ -1,0 +1,6 @@
+path: ../datasets/red_cube  # Chemin racine du dataset (relatif ou absolu)
+train: train/images         # Chemin relatif vers les images d'entraînement
+val: valid/images           # Chemin relatif vers les images de validation
+
+nc: 1                       # Nombre de classes
+names: ['red_cube']         # Nom de votre classe (doit correspondre à l'ID 0 des txt)
