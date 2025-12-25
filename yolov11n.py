@@ -1,9 +1,14 @@
+"""
+Launches YOLOv11 on the OAK D PRO Camera.
+"""
+
+from pathlib import Path
 import cv2
 import depthai as dai
 import numpy as np
 
 # --- Configuration ---
-BLOB_PATH = "/home/nathan/.cache/blobconverter/yolo11n_openvino_2022.1_6shave.blob"
+BLOB_PATH = Path(__file__).parent / "models/yolo11n_base/yolo11n.blob"
 INPUT_SIZE = 416
 NUM_CLASSES = 80
 CONF_THRESHOLD = 0.5
@@ -40,7 +45,7 @@ mono_right.out.link(stereo.right)
 
 # --- 4. Réseau de neurones (NeuralNetwork) ---
 nn = pipeline.create(dai.node.NeuralNetwork)
-nn.setBlobPath(BLOB_PATH)
+nn.setBlobPath(str(BLOB_PATH))
 cam_rgb.preview.link(nn.input)
 
 # --- 5. Sorties (XLinkOut) ---
