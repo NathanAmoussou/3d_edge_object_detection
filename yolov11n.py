@@ -8,7 +8,7 @@ import depthai as dai
 import numpy as np
 
 # --- Configuration ---
-BLOB_PATH = Path(__file__).parent / "runs/detect/red_cube_ultra_simple/weights/best_openvino_2022.1_6shave.blob"
+BLOB_PATH = Path(__file__).parent / "runs/detect/red_cube_v_1/weights/best_openvino_2022.1_6shave.blob"
 INPUT_SIZE = 640
 NUM_CLASSES = 1
 CLASS_NAME = "red_cube"
