@@ -8,9 +8,10 @@ import depthai as dai
 import numpy as np
 
 # --- Configuration ---
-BLOB_PATH = Path(__file__).parent / "models/yolo11n_base/yolo11n.blob"
-INPUT_SIZE = 416
-NUM_CLASSES = 80
+BLOB_PATH = Path(__file__).parent / "runs/detect/red_cube_ultra_simple/weights/best_openvino_2022.1_6shave.blob"
+INPUT_SIZE = 640
+NUM_CLASSES = 1
+CLASS_NAME = "red_cube"
 CONF_THRESHOLD = 0.5
 IOU_THRESHOLD = 0.4
 
@@ -95,15 +96,15 @@ def decode_yolo_v11(output_layer, conf_thres, iou_thres):
 
 # --- Fonction utilitaire pour calculer la distance moyenne ---
 def get_object_depth(depth_frame, box, scale_x, scale_y):
-    # box est [x, y, w, h] dans l'espace 416x416
+    # box est [x, y, w, h] dans l'espace INPUT_SIZE x INPUT_SIZE
     # On doit convertir vers la taille de la depth_frame
     
     # Dimensions de la frame de profondeur
     dh, dw = depth_frame.shape
 
     # Conversion des coordonnées
-    # On utilise les scales inverses car scale_x était (W_ecran / 416)
-    # Ici on veut projeter 416 vers W_depth
+    # On utilise les scales inverses car scale_x était (W_ecran / INPUT_SIZE)
+    # Ici on veut projeter INPUT_SIZE vers W_depth
     
     x = int(box[0] * (dw / INPUT_SIZE))
     y = int(box[1] * (dh / INPUT_SIZE))
@@ -173,7 +174,7 @@ with dai.Device(pipeline) as device:
             scale_y = h / INPUT_SIZE
             
             for i in range(len(boxes)):
-                box = boxes[i] # [x, y, w, h] brut (416px)
+                box = boxes[i] # [x, y, w, h] brut (INPUT_SIZE px)
                 
                 # Calcul de la distance si la frame de profondeur est dispo
                 distance_mm = 0
@@ -188,7 +189,7 @@ with dai.Device(pipeline) as device:
                 
                 # Texte : Classe + Confiance + Distance
                 dist_str = f"{distance_mm/1000:.2f}m" if distance_mm > 0 else "??"
-                label = f"{int(class_ids[i])} [{dist_str}]"
+                label = f"{CLASS_NAME} {scores[i]:.2f} [{dist_str}]"
                 
                 cv2.rectangle(frame, (x_disp, y_disp), (x_disp + bw_disp, y_disp + bh_disp), (0, 255, 0), 2)
                 cv2.putText(frame, label, (x_disp, y_disp - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
