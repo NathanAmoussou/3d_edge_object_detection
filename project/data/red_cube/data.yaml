@@ -1,0 +1,7 @@
+
+path: /home/nathan/Documents/GitHub/3d_edge_object_detection/datasets/red_cube # Chemin absolu (fixe le problème)
+train: train/images      # Relatif à 'path'
+val: valid/images        # Relatif à 'path'
+
+nc: 1
+names: ['red_cube']
