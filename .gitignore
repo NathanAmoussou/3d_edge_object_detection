@@ -1,2 +1,21 @@
-/.idea
-/.claude
+# IDE
+.idea/
+.claude/
+.vscode/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# Training outputs (temporary)
+notebooks/runs/
+
+# YOLO cache
+*.cache
+
+# OS
+.DS_Store
+Thumbs.db
