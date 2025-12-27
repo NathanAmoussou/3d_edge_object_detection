@@ -1,0 +1,3 @@
+Timestamp,Hardware,Model_Name,Size_MB,Inference_Time_ms,mAP50,Precision,Recall,F1
+2025-12-27T15:24:44.939128,GPU_RTX4070,yolo11n,5.35,2.95,0.6714,0.6631,0.5894,0.6241
+2025-12-27T15:45:16.657768,OAK_MyriadX,yolo11n_openvino_2022.1_6shave,5.65,141.88,0.3961,0.8000,0.4952,0.6117
