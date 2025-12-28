@@ -6,11 +6,22 @@ Usage:
     python scripts/benchmark.py --target oak --model models/base/yolo11n_openvino_2022.1_6shave.blob --num-classes 80
 
 Options:
+    --target 4070|oak        : Cible hardware (GPU RTX 4070 ou OAK-D Myriad X)
+    --model PATH             : Chemin vers le modele (.pt/.onnx pour GPU, .blob pour OAK)
+    --num-classes N          : Nombre de classes du modele (defaut: 80 pour COCO)
     --dataset coco128|coco   : Dataset a utiliser (defaut: coco128)
                                - coco128: rapide, 128 images (equite GPU vs OAK)
                                - coco: COCO val2017, 5000 images (baseline scientifique)
     --pixel-perfect          : Meme letterbox GPU/OAK pour equite (defaut: active)
     --no-pixel-perfect       : Laisser Ultralytics gerer le preprocess GPU
+
+Features:
+    - Warmup de 10 frames exclu des stats pour stabilite
+    - Decodage auto-robuste : detecte objectness (v5/v7) vs anchor-free (v8/v11)
+    - Sigmoid auto si logits detectes hors [0,1]
+    - NMS class-aware unifie (MAX_DET=300)
+    - LetterBox Ultralytics officiel pour pixel-perfect
+    - CSV enrichi : parametres, versions libs, metadonnees
 """
 
 import argparse
@@ -33,6 +44,7 @@ CONF_OP = 0.25  # seuil d'exploitation pour P/R/F1
 NMS_IOU = 0.70  # IoU du NMS (class-aware)
 MATCH_IOU = 0.50  # IoU pour le matching TP/GT (mAP50)
 MAX_DET = 300  # max detections après NMS (unifié GPU/OAK pour équité)
+WARMUP_FRAMES = 10  # frames de warmup exclues des stats (GPU et OAK)
 
 
 def get_model_size_mb(filepath: str) -> float:
@@ -47,6 +59,36 @@ def calculate_f1(precision: float, recall: float) -> float:
     return 2 * (precision * recall) / (precision + recall)
 
 
+def get_versions():
+    """Retourne les versions des librairies clés."""
+    versions = {}
+    try:
+        import ultralytics
+
+        versions["ultralytics"] = ultralytics.__version__
+    except (ImportError, AttributeError):
+        versions["ultralytics"] = "N/A"
+    try:
+        import depthai
+
+        versions["depthai"] = depthai.__version__
+    except (ImportError, AttributeError):
+        versions["depthai"] = "N/A"
+    try:
+        versions["opencv"] = cv2.__version__
+    except AttributeError:
+        versions["opencv"] = "N/A"
+    try:
+        import torch
+
+        versions["torch"] = torch.__version__
+        versions["cuda"] = torch.version.cuda if torch.cuda.is_available() else "N/A"
+    except ImportError:
+        versions["torch"] = "N/A"
+        versions["cuda"] = "N/A"
+    return versions
+
+
 def save_results(
     hardware: str,
     model_name: str,
@@ -57,9 +99,12 @@ def save_results(
     precision: float,
     recall: float,
     f1: float,
+    dataset: str = "coco128",
+    pixel_perfect: bool = True,
 ):
-    """Sauvegarde les resultats dans le CSV."""
+    """Sauvegarde les resultats dans le CSV avec métadonnées complètes."""
     file_exists = RESULTS_FILE.exists()
+    versions = get_versions()
 
     with open(RESULTS_FILE, "a", newline="") as f:
         writer = csv.writer(f)
@@ -76,6 +121,21 @@ def save_results(
                     "Precision",
                     "Recall",
                     "F1",
+                    # Métadonnées
+                    "Dataset",
+                    "Pixel_Perfect",
+                    "CONF_EVAL",
+                    "CONF_OP",
+                    "NMS_IOU",
+                    "MATCH_IOU",
+                    "MAX_DET",
+                    "WARMUP",
+                    # Versions
+                    "ultralytics",
+                    "depthai",
+                    "opencv",
+                    "torch",
+                    "cuda",
                 ]
             )
         writer.writerow(
@@ -90,6 +150,21 @@ def save_results(
                 f"{precision:.4f}",
                 f"{recall:.4f}",
                 f"{f1:.4f}",
+                # Métadonnées
+                dataset,
+                pixel_perfect,
+                CONF_EVAL,
+                CONF_OP,
+                NMS_IOU,
+                MATCH_IOU,
+                MAX_DET,
+                WARMUP_FRAMES,
+                # Versions
+                versions["ultralytics"],
+                versions["depthai"],
+                versions["opencv"],
+                versions["torch"],
+                versions["cuda"],
             ]
         )
 
@@ -171,31 +246,36 @@ def load_coco128_dataset(dataset_name: str = "coco128"):
 
 
 def letterbox(img, new_shape=(640, 640), color=(114, 114, 114)):
-    """Redimensionne l'image en gardant le ratio (ajoute du padding)."""
-    shape = img.shape[:2]  # current shape [height, width]
+    """Redimensionne l'image en gardant le ratio (ajoute du padding).
+
+    Utilise la classe LetterBox d'Ultralytics pour garantir un comportement
+    identique au pipeline Ultralytics natif.
+
+    Returns:
+        img: image letterboxée
+        ratio: (ratio_w, ratio_h) facteurs de scale
+        (dw, dh): padding ajouté (gauche, haut)
+    """
+    from ultralytics.data.augment import LetterBox
+
     if isinstance(new_shape, int):
         new_shape = (new_shape, new_shape)
 
-    # Scale ratio (new / old)
+    # Créer le transformer Ultralytics (center=True pour padding symétrique)
+    transform = LetterBox(new_shape, auto=False, stride=32, center=True)
+
+    # Calculer ratio et padding manuellement (LetterBox ne les retourne pas)
+    shape = img.shape[:2]  # [height, width]
     r = min(new_shape[0] / shape[0], new_shape[1] / shape[1])
-
-    # Compute padding
-    ratio = r, r
+    ratio = (r, r)
     new_unpad = int(round(shape[1] * r)), int(round(shape[0] * r))
-    dw, dh = new_shape[1] - new_unpad[0], new_shape[0] - new_unpad[1]
-    dw /= 2  # divide padding into 2 sides
-    dh /= 2
+    dw = (new_shape[1] - new_unpad[0]) / 2
+    dh = (new_shape[0] - new_unpad[1]) / 2
 
-    if shape[::-1] != new_unpad:
-        img = cv2.resize(img, new_unpad, interpolation=cv2.INTER_LINEAR)
+    # Appliquer la transformation
+    img_lb = transform(image=img)
 
-    top, bottom = int(round(dh - 0.1)), int(round(dh + 0.1))
-    left, right = int(round(dw - 0.1)), int(round(dw + 0.1))
-
-    img = cv2.copyMakeBorder(
-        img, top, bottom, left, right, cv2.BORDER_CONSTANT, value=color
-    )
-    return img, ratio, (dw, dh)
+    return img_lb, ratio, (dw, dh)
 
 
 def calculate_iou(box1, box2):
@@ -215,10 +295,17 @@ def calculate_iou(box1, box2):
     return inter_area / union_area
 
 
-def match_tp_fp(preds, gts, iou_thr=0.5):
+def match_tp_fp_fn(preds, gts, iou_thr=0.5):
     """
     Associe prédictions et GT (class-aware, une GT max par prédiction).
-    Retourne: tp (N,1) bool, conf (N,), pred_cls (N,), target_cls (M,)
+    Retourne en une seule passe: tp, conf, pred_cls, target_cls, gt_matched
+
+    Returns:
+        tp: (N,1) bool - True si la prédiction est un TP
+        conf: (N,) float - confiances des prédictions
+        pred_cls: (N,) int - classes prédites
+        target_cls: (M,) int - classes des GT
+        gt_matched: list[bool] - True si la GT a été matchée
     """
     preds = sorted(preds, key=lambda x: x["confidence"], reverse=True)
     tp = np.zeros((len(preds), 1), dtype=bool)
@@ -226,33 +313,51 @@ def match_tp_fp(preds, gts, iou_thr=0.5):
     pred_cls = np.array([p["class_id"] for p in preds], dtype=int)
     target_cls = np.array([g["class_id"] for g in gts], dtype=int)
 
-    matched = [False] * len(gts)
+    gt_matched = [False] * len(gts)
     for i, p in enumerate(preds):
         best_iou = 0.0
         best_j = -1
         for j, g in enumerate(gts):
-            if matched[j] or p["class_id"] != g["class_id"]:
+            if gt_matched[j] or p["class_id"] != g["class_id"]:
                 continue
             iou = calculate_iou(p["box"], g["box"])
             if iou > best_iou:
                 best_iou, best_j = iou, j
         if best_iou >= iou_thr and best_j >= 0:
             tp[i, 0] = True
-            matched[best_j] = True
-    return tp, conf, pred_cls, target_cls
+            gt_matched[best_j] = True
+    return tp, conf, pred_cls, target_cls, gt_matched
 
 
 def compute_map50_prf1(all_predictions, all_ground_truths, conf_op=0.25, iou_thr=0.5):
-    """Calcule mAP50 (AP intégrale) + P/R/F1 au seuil conf_op."""
+    """Calcule mAP50 (AP intégrale) + P/R/F1 au seuil conf_op.
+
+    Le matching est fait une seule fois par image pour éviter les divergences.
+    """
     tp_all, conf_all, pred_cls_all, target_cls_all = [], [], [], []
+    TP = FP = FN = 0
+
     for preds, gts in zip(all_predictions, all_ground_truths):
-        tp, conf, pred_cls, target_cls = match_tp_fp(preds, gts, iou_thr=iou_thr)
+        # --- Matching pour mAP (toutes les prédictions, conf >= CONF_EVAL) ---
+        tp, conf, pred_cls, target_cls, _ = match_tp_fp_fn(preds, gts, iou_thr=iou_thr)
         if len(conf):
             tp_all.append(tp)
             conf_all.append(conf)
             pred_cls_all.append(pred_cls)
         if len(target_cls):
             target_cls_all.append(target_cls)
+
+        # --- Matching pour P/R/F1 au seuil conf_op (une seule passe) ---
+        preds_op = [p for p in preds if p["confidence"] >= conf_op]
+        tp_op, _, _, _, gt_matched = match_tp_fp_fn(preds_op, gts, iou_thr=iou_thr)
+
+        # TP = nombre de prédictions matchées
+        # FP = prédictions non matchées
+        # FN = GT non matchées
+        tp_count = int(tp_op.sum())
+        TP += tp_count
+        FP += len(preds_op) - tp_count
+        FN += sum(1 for m in gt_matched if not m)
 
     if not tp_all or not target_cls_all:
         return {"map50": 0.0, "precision": 0.0, "recall": 0.0, "f1": 0.0}
@@ -266,28 +371,6 @@ def compute_map50_prf1(all_predictions, all_ground_truths, conf_op=0.25, iou_thr
         tp_all, conf_all, pred_cls_all, target_cls_all
     )
     map50 = float(ap_c[:, 0].mean()) if ap_c.size else 0.0
-
-    TP = FP = FN = 0
-    for preds, gts in zip(all_predictions, all_ground_truths):
-        preds_op = [p for p in preds if p["confidence"] >= conf_op]
-        m = match_tp_fp(preds_op, gts, iou_thr=iou_thr)[0].reshape(-1)
-        TP += int(m.sum())
-        FP += int((~m).sum())
-
-        gt_matched = [False] * len(gts)
-        preds_sorted = sorted(preds_op, key=lambda x: x["confidence"], reverse=True)
-        for p in preds_sorted:
-            best_iou = 0.0
-            best_j = -1
-            for j, g in enumerate(gts):
-                if gt_matched[j] or p["class_id"] != g["class_id"]:
-                    continue
-                iou = calculate_iou(p["box"], g["box"])
-                if iou > best_iou:
-                    best_iou, best_j = iou, j
-            if best_iou >= iou_thr and best_j >= 0:
-                gt_matched[best_j] = True
-        FN += int(sum(1 for x in gt_matched if not x))
 
     precision = TP / (TP + FP) if (TP + FP) else 0.0
     recall = TP / (TP + FN) if (TP + FN) else 0.0
@@ -331,13 +414,23 @@ def benchmark_gpu(
     print(f"Classes: {len(model.names)}")
 
     print(f"\nInference sur {dataset.upper()} (GPU)...")
-    data = load_coco128_dataset(dataset)
+    dataset_items = load_coco128_dataset(dataset)
+
+    # Warmup (exclure des stats)
+    print(f"Warmup ({WARMUP_FRAMES} frames)...")
+    for sample in dataset_items[:WARMUP_FRAMES]:
+        img = cv2.imread(sample["image_path"])
+        if img is None:
+            continue
+        img_lb, _, _ = letterbox(img, (IMGSZ, IMGSZ))
+        _ = model.predict(img_lb, imgsz=IMGSZ, conf=CONF_EVAL, device=0, verbose=False)
+
     all_predictions = []
     all_ground_truths = []
     e2e_times = []
     device_times = []
 
-    for sample in data:
+    for idx, sample in enumerate(dataset_items):
         img = cv2.imread(sample["image_path"])
         if img is None:
             continue
@@ -476,6 +569,8 @@ def benchmark_gpu(
         precision=precision,
         recall=recall,
         f1=f1,
+        dataset=dataset,
+        pixel_perfect=pixel_perfect,
     )
 
 
@@ -505,8 +600,8 @@ def benchmark_oak(model_path: str, num_classes: int, dataset: str = "coco128"):
 
     # Charger le dataset
     print(f"\nChargement du dataset {dataset.upper()}...")
-    data = load_coco128_dataset(dataset)
-    print(f"Images: {len(data)}")
+    dataset_items = load_coco128_dataset(dataset)
+    print(f"Images: {len(dataset_items)}")
 
     # Pipeline DepthAI
     pipeline = dai.Pipeline()
@@ -538,9 +633,25 @@ def benchmark_oak(model_path: str, num_classes: int, dataset: str = "coco128"):
         q_in = device.getInputQueue("input")
         q_out = device.getOutputQueue("nn", maxSize=1, blocking=True)
 
+        # Warmup (exclure des stats)
+        print(f"Warmup ({WARMUP_FRAMES} frames)...")
+        for sample in dataset_items[:WARMUP_FRAMES]:
+            img = cv2.imread(sample["image_path"])
+            if img is None:
+                continue
+            img_lb, _, _ = letterbox(img, (IMGSZ, IMGSZ))
+            img_chw = np.ascontiguousarray(img_lb.transpose(2, 0, 1))
+            dai_frame = dai.ImgFrame()
+            dai_frame.setWidth(IMGSZ)
+            dai_frame.setHeight(IMGSZ)
+            dai_frame.setType(dai.ImgFrame.Type.BGR888p)
+            dai_frame.setData(img_chw.reshape(-1))
+            q_in.send(dai_frame)
+            _ = q_out.get()
+
         output_layers = None
 
-        for i, sample in enumerate(data):
+        for i, sample in enumerate(dataset_items):
             img = cv2.imread(sample["image_path"])
             if img is None:
                 continue
@@ -576,6 +687,12 @@ def benchmark_oak(model_path: str, num_classes: int, dataset: str = "coco128"):
                 output_layers = in_nn.getAllLayerNames()
             raw_data = np.array(in_nn.getLayerFp16(output_layers[0]))
 
+            # --- DETECTION AUTO DU FORMAT (v5/v7 avec objectness vs v8/v11 sans) ---
+            n_anchors = (IMGSZ // 8) ** 2 + (IMGSZ // 16) ** 2 + (IMGSZ // 32) ** 2
+            has_objectness = (raw_data.size % (num_classes + 5) == 0) and (
+                raw_data.size // (num_classes + 5) == n_anchors
+            )
+
             # --- SANITY-CHECK DU FORMAT DE SORTIE OAK ---
             if i == 0:
                 print("\n[Sanity-check] Format de sortie OAK:")
@@ -583,62 +700,77 @@ def benchmark_oak(model_path: str, num_classes: int, dataset: str = "coco128"):
                 print(
                     f"  - Min / Max          : {raw_data.min():.4f} / {raw_data.max():.4f}"
                 )
-                expected_size = (
-                    (num_classes + 4) * (IMGSZ // 8) ** 2
-                    + (num_classes + 4) * (IMGSZ // 16) ** 2
-                    + (num_classes + 4) * (IMGSZ // 32) ** 2
-                )
-                print(f"  - Taille attendue    : {expected_size} (3 heads concaténées)")
-                has_objectness = raw_data.size == (num_classes + 5) * (
-                    (IMGSZ // 8) ** 2 + (IMGSZ // 16) ** 2 + (IMGSZ // 32) ** 2
-                )
+                expected_v8 = (num_classes + 4) * n_anchors
+                expected_v5 = (num_classes + 5) * n_anchors
+                print(f"  - Taille attendue v8 : {expected_v8} | v5: {expected_v5}")
                 print(
                     f"  - Objectness détecté : {'OUI (v5/v7 style)' if has_objectness else 'NON (v8/v11 style)'}"
                 )
-                if has_objectness:
-                    print(
-                        "  [ATTENTION] Le blob semble avoir un objectness - vérifiez le décodage!"
-                    )
 
+            # --- RESHAPE ET DECODAGE AUTO-ROBUSTE ---
             try:
-                data = raw_data.reshape(num_classes + 4, -1).transpose()
+                if has_objectness:
+                    # Format v5/v7: [cx, cy, w, h, obj, cls0, cls1, ...]
+                    out = raw_data.reshape(num_classes + 5, -1).transpose()
+                    boxes = out[:, :4]
+                    obj = out[:, 4]
+                    cls = out[:, 5:]
+
+                    # Auto-sigmoid si logits détectés
+                    if obj.min() < 0 or obj.max() > 1:
+                        if i == 0:
+                            print("  [AUTO] Sigmoid appliqué sur objectness")
+                        obj = 1 / (1 + np.exp(-np.clip(obj, -50, 50)))
+                    if cls.min() < 0 or cls.max() > 1:
+                        if i == 0:
+                            print("  [AUTO] Sigmoid appliqué sur classes")
+                        cls = 1 / (1 + np.exp(-np.clip(cls, -50, 50)))
+
+                    class_ids_all = cls.argmax(axis=1)
+                    scores = obj * cls.max(axis=1)
+                else:
+                    # Format v8/v11: [cx, cy, w, h, cls0, cls1, ...]
+                    out = raw_data.reshape(num_classes + 4, -1).transpose()
+                    boxes = out[:, :4]
+                    cls = out[:, 4:]
+
+                    # Auto-sigmoid si logits détectés
+                    if cls.min() < 0 or cls.max() > 1:
+                        if i == 0:
+                            print("  [AUTO] Sigmoid appliqué sur classes")
+                        cls = 1 / (1 + np.exp(-np.clip(cls, -50, 50)))
+
+                    class_ids_all = cls.argmax(axis=1)
+                    scores = cls.max(axis=1)
+
             except ValueError as e:
                 if i == 0:
                     print(f"  [ERREUR RESHAPE] {e}")
-                    print(
-                        f"  - Taille réelle: {raw_data.size}, attendu: multiple de {num_classes + 4}"
-                    )
+                    print(f"  - Taille réelle: {raw_data.size}")
                 continue
 
             # Sanity-check des scores (première image uniquement)
             if i == 0:
-                scores_check = np.max(data[:, 4:], axis=1)
                 print(
-                    f"  - Score range        : {scores_check.min():.4f} - {scores_check.max():.4f}"
+                    f"  - Score range (post) : {scores.min():.4f} - {scores.max():.4f}"
                 )
-                if scores_check.max() > 1.0 or scores_check.min() < 0.0:
-                    print(
-                        "  [ATTENTION] Scores hors [0,1] - vérifiez si softmax/sigmoid est appliqué!"
-                    )
 
-            scores = np.max(data[:, 4:], axis=1)
             mask = scores > CONF_EVAL
-            data_filtered = data[mask]
+            boxes_filtered = boxes[mask]
             scores_filtered = scores[mask]
+            class_ids = class_ids_all[mask]
 
             predictions = []
             if len(scores_filtered) > 0:
-                class_ids = np.argmax(data_filtered[:, 4:], axis=1)
-
                 # --- PREPARATION POUR NMS (Format xywh requis par OpenCV) ---
-                # data_filtered est en [cx, cy, w, h] (format YOLO brut)
+                # boxes_filtered est en [cx, cy, w, h] (format YOLO brut)
                 # OpenCV NMS demande [x_top_left, y_top_left, w, h]
 
                 boxes_nms = []
                 boxes_xyxy = []  # On garde aussi la version xyxy pour apres le NMS
 
                 for j in range(len(scores_filtered)):
-                    cx, cy, w, h = data_filtered[j, 0:4]
+                    cx, cy, w, h = boxes_filtered[j, 0:4]
 
                     # 1. Format pour NMS [x, y, w, h]
                     x = cx - (w / 2)
@@ -736,7 +868,7 @@ def benchmark_oak(model_path: str, num_classes: int, dataset: str = "coco128"):
             all_ground_truths.append(gt_list)
 
             if (i + 1) % 20 == 0:
-                print(f"  {i + 1}/{len(data)} images...")
+                print(f"  {i + 1}/{len(dataset_items)} images...")
 
     # Metriques
     print("\nCalcul des metriques...")
@@ -779,6 +911,8 @@ def benchmark_oak(model_path: str, num_classes: int, dataset: str = "coco128"):
         precision=precision,
         recall=recall,
         f1=f1,
+        dataset=dataset,
+        pixel_perfect=True,  # OAK utilise toujours le même letterbox
     )
 
 
@@ -819,20 +953,19 @@ def main():
     )
     parser.add_argument(
         "--pixel-perfect",
+        dest="pixel_perfect",
         action="store_true",
-        default=True,
-        help="Appliquer le meme letterbox GPU/OAK pour equite (defaut: True)",
+        help="Appliquer le meme letterbox GPU/OAK pour equite (defaut)",
     )
     parser.add_argument(
         "--no-pixel-perfect",
-        action="store_true",
+        dest="pixel_perfect",
+        action="store_false",
         help="Desactiver le mode pixel-perfect (Ultralytics gere le preprocess GPU)",
     )
+    parser.set_defaults(pixel_perfect=True)
 
     args = parser.parse_args()
-
-    # Gerer --no-pixel-perfect
-    pixel_perfect = not args.no_pixel_perfect
 
     # Resoudre le chemin
     model_path = Path(args.model)
@@ -857,7 +990,7 @@ def main():
         benchmark_gpu(
             model_path,
             args.num_classes,
-            pixel_perfect=pixel_perfect,
+            pixel_perfect=args.pixel_perfect,
             dataset=args.dataset,
         )
     elif args.target == "oak":
