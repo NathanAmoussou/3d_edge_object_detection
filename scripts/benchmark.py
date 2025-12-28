@@ -32,6 +32,7 @@ CONF_EVAL = 0.001  # seuil très bas pour la courbe PR (mAP)
 CONF_OP = 0.25  # seuil d'exploitation pour P/R/F1
 NMS_IOU = 0.70  # IoU du NMS (class-aware)
 MATCH_IOU = 0.50  # IoU pour le matching TP/GT (mAP50)
+MAX_DET = 300  # max detections après NMS (unifié GPU/OAK pour équité)
 
 
 def get_model_size_mb(filepath: str) -> float:
@@ -95,29 +96,47 @@ def save_results(
     print(f"\nResultats sauvegardes dans: {RESULTS_FILE}")
 
 
-def load_coco128_dataset(dataset: str = "coco128"):
+def load_coco128_dataset(dataset_name: str = "coco128"):
     """Charge le dataset COCO128 ou COCO val2017 (images + labels).
 
     Args:
-        dataset: "coco128" pour coco128/train2017 (rapide, 128 images)
-                 "coco" pour COCO val2017 (baseline scientifique, 5000 images)
+        dataset_name: "coco128" pour coco128/train2017 (rapide, 128 images)
+                      "coco" pour COCO val2017 (baseline scientifique, 5000 images)
     """
     from ultralytics.data.utils import check_det_dataset
 
-    if dataset == "coco":
+    if dataset_name == "coco":
         # COCO val2017 - vrai set de validation pour baseline scientifique
         data = check_det_dataset("coco.yaml")
         val_images_dir = Path(data["path"]) / "images" / "val2017"
         val_labels_dir = Path(data["path"]) / "labels" / "val2017"
+        expected_count = 5000
         print("[Dataset] COCO val2017 (baseline scientifique)")
     else:
         # coco128 - rapide pour tests GPU vs OAK
         data = check_det_dataset("coco128.yaml")
         val_images_dir = Path(data["path"]) / "images" / "train2017"
         val_labels_dir = Path(data["path"]) / "labels" / "train2017"
+        expected_count = 128
         print("[Dataset] coco128/train2017 (equite GPU vs OAK, pas baseline)")
 
+    print(f"[Dataset] Chemin images: {val_images_dir}")
+    print(f"[Dataset] Chemin labels: {val_labels_dir}")
+
     image_files = sorted(val_images_dir.glob("*.jpg"))
+    actual_count = len(image_files)
+
+    print(f"[Dataset] Images trouvees: {actual_count} (attendu: {expected_count})")
+
+    # Assertion stricte pour garantir l'équité GPU vs OAK
+    if actual_count != expected_count:
+        raise AssertionError(
+            f"[ERREUR DATASET] Nombre d'images incorrect!\n"
+            f"  - Attendu: {expected_count}\n"
+            f"  - Trouve: {actual_count}\n"
+            f"  - Chemin: {val_images_dir}\n"
+            f"Verifiez que le dataset est correctement telecharge."
+        )
 
     dataset = []
     for img_path in image_files:
@@ -335,7 +354,7 @@ def benchmark_gpu(
                 imgsz=IMGSZ,
                 conf=CONF_EVAL,
                 iou=NMS_IOU,
-                max_det=3000,
+                max_det=MAX_DET,
                 device=0,
                 verbose=False,
             )[0]
@@ -368,7 +387,7 @@ def benchmark_gpu(
                 imgsz=IMGSZ,
                 conf=CONF_EVAL,
                 iou=NMS_IOU,
-                max_det=3000,
+                max_det=MAX_DET,
                 device=0,
                 verbose=False,
             )[0]
@@ -653,6 +672,14 @@ def benchmark_oak(model_path: str, num_classes: int, dataset: str = "coco128"):
                     indices = np.array(keep, dtype=int)
 
                 indices = np.array(indices).reshape(-1)
+
+                # --- CAP MAX_DET (équité avec GPU) ---
+                # Trier par score décroissant et garder les top-K
+                if len(indices) > MAX_DET:
+                    idx_scores = [(idx, scores_filtered[idx]) for idx in indices]
+                    idx_scores.sort(key=lambda x: x[1], reverse=True)
+                    indices = np.array([x[0] for x in idx_scores[:MAX_DET]])
+
                 if len(indices) > 0:
                     for idx in indices.flatten():
                         # On recupere la boite correspondante en xyxy
