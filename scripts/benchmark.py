@@ -299,8 +299,6 @@ def benchmark_gpu(model_path: str, num_classes: int):
             device=0,
             verbose=False,
         )[0]
-        end_time = time.perf_counter()
-        inference_times.append((end_time - start_time) * 1000)
 
         preds = []
         for b in result.boxes:
@@ -317,6 +315,10 @@ def benchmark_gpu(model_path: str, num_classes: int):
                     "confidence": float(b.conf.item()),
                 }
             )
+
+        end_time = time.perf_counter()
+        inference_times.append((end_time - start_time) * 1000)
+
         all_predictions.append(preds)
 
         gt_list = []
@@ -423,7 +425,7 @@ def benchmark_oak(model_path: str, num_classes: int):
 
     with dai.Device(pipeline) as device:
         q_in = device.getInputQueue("input")
-        q_out = device.getOutputQueue("nn", maxSize=4, blocking=True)
+        q_out = device.getOutputQueue("nn", maxSize=1, blocking=True)
 
         for i, sample in enumerate(dataset):
             img = cv2.imread(sample["image_path"])
@@ -431,6 +433,7 @@ def benchmark_oak(model_path: str, num_classes: int):
                 continue
 
             orig_h, orig_w = img.shape[:2]
+            start_time = time.perf_counter()
 
             # Letterbox en BGR (pas de conversion RGB, le preprocess est dans le blob)
             img_lb, ratio, (dw, dh) = letterbox(img, (IMGSZ, IMGSZ))
@@ -448,12 +451,8 @@ def benchmark_oak(model_path: str, num_classes: int):
             dai_frame.setData(img_chw.reshape(-1))  # PAS de .tolist()
 
             # Inference
-            start_time = time.perf_counter()
             q_in.send(dai_frame)
             in_nn = q_out.get()
-            end_time = time.perf_counter()
-
-            inference_times.append((end_time - start_time) * 1000)
 
             # Decoder
             output_layers = in_nn.getAllLayerNames()
@@ -539,6 +538,9 @@ def benchmark_oak(model_path: str, num_classes: int):
                                 "confidence": float(scores_filtered[idx]),
                             }
                         )
+
+            end_time = time.perf_counter()
+            inference_times.append((end_time - start_time) * 1000)
 
             all_predictions.append(predictions)
 
