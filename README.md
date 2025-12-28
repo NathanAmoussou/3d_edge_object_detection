@@ -60,7 +60,10 @@
 		- Fait avec `scripts/detect_oak.py`
 - [x] Récupérer et préparer le modèle de base, non *fine-tuné*
 	- Fait avec `notebooks/base_export.ipynb`
-- [ ] Développer le script qui lance les mesures en fonction du modèle et d'une architecture
+- [ ] Développer le script de *benchmark*
+	- [x] Développer la partie **compilation**
+		- Fait avec `scripts/compile.py`
+	- [ ] Développer la partie **mesures**
 - [ ] Développer le *pipeline* d'optimisations/manipulations du modèle
 	- [ ] Développer le *pipeline* d'**élagage**
 	- [ ] Développer le *pipeline* de **quantification**
