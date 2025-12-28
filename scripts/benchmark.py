@@ -22,6 +22,125 @@ Features:
     - NMS class-aware unifie (MAX_DET=300)
     - LetterBox Ultralytics officiel pour pixel-perfect
     - CSV enrichi : parametres, versions libs, metadonnees
+
+===============================================================================
+DECISIONS DE CONCEPTION ET POINTS D'ATTENTION
+===============================================================================
+
+1. EQUITE DU PREPROCESSING (pixel-perfect)
+   ------------------------
+   DECISION: Appliquer exactement le meme letterbox cote GPU et OAK.
+   POURQUOI: Si le preprocessing differe, on compare des pommes et des oranges.
+             Le modele voit des pixels differents -> predictions differentes.
+   IMPLEMENTATION: On utilise la classe LetterBox d'Ultralytics (pas une reimpl)
+                   pour garantir un comportement identique au pipeline natif.
+
+   QUESTION OUVERTE: Le letterbox d'Ultralytics peut avoir des micro-differences
+   de rounding par rapport a notre ancienne implementation. A verifier si les
+   mAP divergent significativement.
+
+2. DECODAGE OAK AUTO-ROBUSTE
+   -------------------------
+   DECISION: Detecter automatiquement le format de sortie du blob.
+   POURQUOI: YOLOv5/v7 ont un "objectness" separe, v8/v11 n'en ont pas.
+             Si on se trompe de format, les scores sont faux -> mAP faux.
+   IMPLEMENTATION:
+     - On verifie si raw_data.size correspond a (num_classes+5)*anchors (v5/v7)
+       ou (num_classes+4)*anchors (v8/v11)
+     - On applique sigmoid automatiquement si les valeurs sont hors [0,1]
+
+   QUESTION OUVERTE: Certains blobs peuvent avoir des formats exotiques
+   (ex: DFL pour les boxes). Ce script suppose cx,cy,w,h brut.
+
+3. NMS : ALIGNEMENT GPU vs OAK
+   ----------------------------
+   DECISION: Utiliser le meme IoU threshold (NMS_IOU=0.70) et MAX_DET=300.
+   POURQUOI: Ultralytics utilise torchvision.nms, nous utilisons cv2.dnn.NMS.
+             Ces implementations peuvent diverger legerement.
+
+   QUESTION OUVERTE: Pour une equite "parfaite", on pourrait reimplementer
+   le meme NMS numpy des deux cotes. Mais en pratique, les differences
+   semblent negligeables (a verifier avec le notebook de verification).
+
+   ALTERNATIVE NON IMPLEMENTEE: Utiliser torchvision.ops.nms en CPU pour
+   les deux pipelines (necessite torch installe).
+
+4. TIMING : CE QUI EST MESURE
+   ---------------------------
+   GPU:
+     - e2e_time: time.perf_counter() autour de predict() complet
+     - device_time: result.speed["inference"] (temps GPU pur, sans pre/post)
+
+   OAK:
+     - e2e_time: preprocess + send + inference + get + postprocess
+     - device_time: temps entre send() et get() (inclut USB + scheduling)
+
+   ATTENTION: device_time OAK != device_time GPU !
+     - GPU device_time = pure inference GPU
+     - OAK device_time = USB aller + queue + inference + USB retour
+
+   QUESTION OUVERTE: Pour avoir un "NN-only" comparable cote OAK, il faudrait
+   utiliser les timestamps DepthAI (dai.Clock.now()) pour mesurer le temps
+   passe sur le VPU uniquement. Non implemente car complexe.
+
+5. WARMUP
+   -------
+   DECISION: 10 frames de warmup exclues des statistiques.
+   POURQUOI:
+     - GPU: compilation JIT, allocation memoire CUDA
+     - OAK: remplissage des queues, stabilisation thermique
+   Les premieres inferences sont souvent plus lentes.
+
+6. DATASET ET VALIDATION
+   ----------------------
+   DECISION:
+     - coco128 (128 images) pour tests rapides GPU vs OAK
+     - coco val2017 (5000 images) pour baseline scientifique
+   POURQUOI: coco128/train2017 n'est PAS un vrai set de validation.
+             Pour publier des chiffres, utiliser --dataset coco.
+
+   ASSERTION: On verifie que le nombre d'images correspond (128 ou 5000).
+              Si le dataset est incomplet, le script refuse de continuer.
+
+7. METRIQUES : mAP vs P/R/F1
+   --------------------------
+   DECISION: Deux seuils de confiance separes.
+     - CONF_EVAL=0.001: seuil tres bas pour calculer la courbe PR complete (mAP)
+     - CONF_OP=0.25: seuil "operationnel" pour P/R/F1 en conditions reelles
+
+   POURQUOI: mAP50 integre sur toute la courbe PR, donc on veut toutes les
+             detections. P/R/F1 simule un deploiement reel avec conf=0.25.
+
+   IMPLEMENTATION: Un seul matching par image pour eviter les divergences.
+   L'ancienne version faisait deux matchings (un pour mAP, un pour P/R/F1)
+   ce qui pouvait creer des incoherences.
+
+8. CSV ENRICHI
+   ------------
+   DECISION: Logger tous les parametres et versions dans le CSV.
+   POURQUOI: Dans 2 semaines, on ne se souviendra plus des parametres exacts.
+             Le CSV doit etre auto-suffisant pour reproduire les resultats.
+
+===============================================================================
+QUESTIONS EN SUSPENS / AMELIORATIONS FUTURES
+===============================================================================
+
+1. NMS UNIFIE: Implementer un NMS numpy identique GPU/OAK pour eliminer
+   toute variance liee a l'implementation (torchvision vs OpenCV).
+
+2. TIMING OAK PRECIS: Utiliser dai.ImgFrame.setTimestamp() et
+   dai.Clock.now() pour mesurer le temps VPU pur, sans USB.
+
+3. FORMATS EXOTIQUES: Supporter les blobs avec DFL (Distribution Focal Loss)
+   pour les boxes, utilises par certains exports YOLOv8.
+
+4. MULTI-BATCH: Le script traite image par image. Pour le GPU, un batch
+   plus grand pourrait etre plus representatif des perfs reelles.
+
+5. PROFILING DETAILLE: Ajouter une option --profile pour logger les temps
+   de chaque etape (preprocess, inference, NMS, postprocess) dans le CSV.
+
+===============================================================================
 """
 
 import argparse
@@ -35,16 +154,36 @@ import cv2
 import numpy as np
 from ultralytics.utils.metrics import ap_per_class
 
-# --- Configuration ---
+# =============================================================================
+# CONFIGURATION GLOBALE
+# =============================================================================
+# Ces parametres sont partages entre GPU et OAK pour garantir l'equite.
+# Modifier l'un d'eux affecte les deux pipelines.
+
 ROOT_DIR = Path(__file__).parent.parent.resolve()
 RESULTS_FILE = ROOT_DIR / "benchmark_results.csv"
-IMGSZ = 640
-CONF_EVAL = 0.001  # seuil très bas pour la courbe PR (mAP)
-CONF_OP = 0.25  # seuil d'exploitation pour P/R/F1
-NMS_IOU = 0.70  # IoU du NMS (class-aware)
-MATCH_IOU = 0.50  # IoU pour le matching TP/GT (mAP50)
-MAX_DET = 300  # max detections après NMS (unifié GPU/OAK pour équité)
-WARMUP_FRAMES = 10  # frames de warmup exclues des stats (GPU et OAK)
+
+IMGSZ = 640  # Taille d'entree du modele (doit correspondre a l'export du blob)
+
+# --- Seuils de confiance ---
+# DECISION: Deux seuils separes pour deux usages differents.
+# - CONF_EVAL: tres bas pour avoir toutes les detections et calculer mAP complet
+# - CONF_OP: seuil realiste pour simuler un deploiement en production
+CONF_EVAL = 0.001  # seuil pour la courbe PR complete (mAP)
+CONF_OP = 0.25  # seuil "operationnel" pour P/R/F1
+
+# --- Parametres NMS ---
+# DECISION: Memes parametres GPU et OAK pour equite.
+# NOTE: Ultralytics utilise torchvision.nms, OAK utilise cv2.dnn.NMS.
+#       Peut creer de legeres differences (voir doc DECISIONS DE CONCEPTION).
+NMS_IOU = 0.70  # IoU threshold pour le NMS (class-aware)
+MATCH_IOU = 0.50  # IoU threshold pour le matching TP/GT (mAP50)
+MAX_DET = 300  # Max detections apres NMS (unifie GPU/OAK)
+
+# --- Warmup ---
+# DECISION: Exclure les premieres frames des statistiques.
+# POURQUOI: JIT compilation (GPU), remplissage queues (OAK), stabilisation.
+WARMUP_FRAMES = 10
 
 
 def get_model_size_mb(filepath: str) -> float:
@@ -248,23 +387,30 @@ def load_coco128_dataset(dataset_name: str = "coco128"):
 def letterbox(img, new_shape=(640, 640), color=(114, 114, 114)):
     """Redimensionne l'image en gardant le ratio (ajoute du padding).
 
-    Utilise la classe LetterBox d'Ultralytics pour garantir un comportement
-    identique au pipeline Ultralytics natif.
+    DECISION: Utiliser la classe LetterBox d'Ultralytics plutot qu'une reimpl.
+    POURQUOI: Garantit un comportement IDENTIQUE au pipeline Ultralytics natif.
+              Evite les bugs subtils de rounding/padding qui faussent la comparaison.
+
+    NOTE: On recalcule ratio/dw/dh manuellement car LetterBox ne les retourne pas,
+          mais on a besoin de ces valeurs pour le reverse letterbox des boxes.
 
     Returns:
-        img: image letterboxée
-        ratio: (ratio_w, ratio_h) facteurs de scale
-        (dw, dh): padding ajouté (gauche, haut)
+        img: image letterboxee (640x640 avec padding gris 114)
+        ratio: (ratio_w, ratio_h) facteurs de scale appliques
+        (dw, dh): padding ajoute (gauche, haut) en pixels
     """
     from ultralytics.data.augment import LetterBox
 
     if isinstance(new_shape, int):
         new_shape = (new_shape, new_shape)
 
-    # Créer le transformer Ultralytics (center=True pour padding symétrique)
+    # Creer le transformer Ultralytics
+    # - auto=False: pas d'adaptation auto au stride (on veut exactement new_shape)
+    # - center=True: padding symetrique (haut/bas, gauche/droite)
     transform = LetterBox(new_shape, auto=False, stride=32, center=True)
 
     # Calculer ratio et padding manuellement (LetterBox ne les retourne pas)
+    # Ces valeurs sont necessaires pour le reverse letterbox des predictions
     shape = img.shape[:2]  # [height, width]
     r = min(new_shape[0] / shape[0], new_shape[1] / shape[1])
     ratio = (r, r)
@@ -297,15 +443,19 @@ def calculate_iou(box1, box2):
 
 def match_tp_fp_fn(preds, gts, iou_thr=0.5):
     """
-    Associe prédictions et GT (class-aware, une GT max par prédiction).
-    Retourne en une seule passe: tp, conf, pred_cls, target_cls, gt_matched
+    Associe predictions et GT (class-aware, une GT max par prediction).
+
+    DECISION: Retourner gt_matched en plus de tp pour calculer FN dans la meme passe.
+    POURQUOI: L'ancienne version faisait deux matchings separes (un pour TP/FP,
+              un pour FN), ce qui pouvait creer des divergences subtiles.
+              Maintenant tout est calcule en une seule passe coherente.
 
     Returns:
-        tp: (N,1) bool - True si la prédiction est un TP
-        conf: (N,) float - confiances des prédictions
-        pred_cls: (N,) int - classes prédites
+        tp: (N,1) bool - True si la prediction est un TP
+        conf: (N,) float - confiances des predictions
+        pred_cls: (N,) int - classes predites
         target_cls: (M,) int - classes des GT
-        gt_matched: list[bool] - True si la GT a été matchée
+        gt_matched: list[bool] - True si la GT a ete matchee (pour calculer FN)
     """
     preds = sorted(preds, key=lambda x: x["confidence"], reverse=True)
     tp = np.zeros((len(preds), 1), dtype=bool)
@@ -330,9 +480,17 @@ def match_tp_fp_fn(preds, gts, iou_thr=0.5):
 
 
 def compute_map50_prf1(all_predictions, all_ground_truths, conf_op=0.25, iou_thr=0.5):
-    """Calcule mAP50 (AP intégrale) + P/R/F1 au seuil conf_op.
+    """Calcule mAP50 (AP integrale) + P/R/F1 au seuil conf_op.
 
-    Le matching est fait une seule fois par image pour éviter les divergences.
+    DECISION: Faire le matching une seule fois par image.
+    POURQUOI: Evite les divergences entre le calcul mAP et le calcul P/R/F1.
+
+    NOTE: On fait DEUX matchings par image, mais pour des usages differents:
+      1. Matching avec TOUTES les predictions (conf >= CONF_EVAL) -> pour mAP
+      2. Matching avec predictions filtrees (conf >= conf_op) -> pour P/R/F1
+
+    C'est voulu car mAP doit voir toute la courbe PR, tandis que P/R/F1
+    simule un deploiement reel avec un seuil operationnel.
     """
     tp_all, conf_all, pred_cls_all, target_cls_all = [], [], [], []
     TP = FP = FN = 0
@@ -381,6 +539,14 @@ def compute_map50_prf1(all_predictions, all_ground_truths, conf_op=0.25, iou_thr
 
 # =============================================================================
 # BRANCHE GPU (Ultralytics)
+# =============================================================================
+# Cette branche utilise Ultralytics pour l'inference sur GPU NVIDIA.
+#
+# POINTS CLES:
+# - Mode pixel-perfect: on applique notre letterbox() avant predict() pour que
+#   le GPU voie exactement les memes pixels que l'OAK.
+# - Le NMS est fait par Ultralytics (torchvision.nms) avec nos parametres.
+# - device_time vient de result.speed["inference"] = temps GPU pur.
 # =============================================================================
 
 
@@ -577,6 +743,19 @@ def benchmark_gpu(
 # =============================================================================
 # BRANCHE OAK-D (blob + DepthAI)
 # =============================================================================
+# Cette branche execute le blob compile sur le VPU Myriad X de l'OAK-D.
+#
+# POINTS CLES:
+# - Le blob doit etre exporte avec le bon format d'entree (BGR, 640x640, uint8)
+# - Le decodage detecte automatiquement v5/v7 (objectness) vs v8/v11 (anchor-free)
+# - Le NMS est fait cote host avec OpenCV (cv2.dnn.NMSBoxesBatched)
+# - device_time = temps entre send() et get(), inclut USB + VPU + USB
+#
+# ATTENTION AU FORMAT D'ENTREE DU BLOB:
+# - Type: BGR888p (planar, pas interleaved)
+# - Shape: (3, 640, 640) en CHW
+# - Dtype: uint8 (la normalisation /255 doit etre dans le blob)
+# =============================================================================
 
 
 def benchmark_oak(model_path: str, num_classes: int, dataset: str = "coco128"):
@@ -687,7 +866,15 @@ def benchmark_oak(model_path: str, num_classes: int, dataset: str = "coco128"):
                 output_layers = in_nn.getAllLayerNames()
             raw_data = np.array(in_nn.getLayerFp16(output_layers[0]))
 
-            # --- DETECTION AUTO DU FORMAT (v5/v7 avec objectness vs v8/v11 sans) ---
+            # =================================================================
+            # DETECTION AUTO DU FORMAT DE SORTIE
+            # =================================================================
+            # YOLOv5/v7: [cx, cy, w, h, objectness, cls0, cls1, ...] = 85 valeurs/anchor
+            # YOLOv8/v11: [cx, cy, w, h, cls0, cls1, ...]            = 84 valeurs/anchor
+            #
+            # On detecte le format en verifiant si la taille correspond a l'un ou l'autre.
+            # n_anchors = somme des grilles (80x80 + 40x40 + 20x20 = 8400 pour 640x640)
+            # =================================================================
             n_anchors = (IMGSZ // 8) ** 2 + (IMGSZ // 16) ** 2 + (IMGSZ // 32) ** 2
             has_objectness = (raw_data.size % (num_classes + 5) == 0) and (
                 raw_data.size // (num_classes + 5) == n_anchors
@@ -707,7 +894,17 @@ def benchmark_oak(model_path: str, num_classes: int, dataset: str = "coco128"):
                     f"  - Objectness détecté : {'OUI (v5/v7 style)' if has_objectness else 'NON (v8/v11 style)'}"
                 )
 
-            # --- RESHAPE ET DECODAGE AUTO-ROBUSTE ---
+            # =================================================================
+            # RESHAPE ET DECODAGE AUTO-ROBUSTE
+            # =================================================================
+            # DECISION: Appliquer sigmoid automatiquement si les valeurs sont
+            #           hors de [0, 1] (indique des logits bruts).
+            # POURQUOI: Certains exports incluent sigmoid dans le blob, d'autres non.
+            #           On ne veut pas que l'utilisateur ait a le specifier.
+            #
+            # NOTE: Le clip(-50, 50) evite les overflow dans exp() pour les
+            #       valeurs extremes.
+            # =================================================================
             try:
                 if has_objectness:
                     # Format v5/v7: [cx, cy, w, h, obj, cls0, cls1, ...]
@@ -716,17 +913,18 @@ def benchmark_oak(model_path: str, num_classes: int, dataset: str = "coco128"):
                     obj = out[:, 4]
                     cls = out[:, 5:]
 
-                    # Auto-sigmoid si logits détectés
+                    # Auto-sigmoid si logits detectes
                     if obj.min() < 0 or obj.max() > 1:
                         if i == 0:
-                            print("  [AUTO] Sigmoid appliqué sur objectness")
+                            print("  [AUTO] Sigmoid applique sur objectness")
                         obj = 1 / (1 + np.exp(-np.clip(obj, -50, 50)))
                     if cls.min() < 0 or cls.max() > 1:
                         if i == 0:
-                            print("  [AUTO] Sigmoid appliqué sur classes")
+                            print("  [AUTO] Sigmoid applique sur classes")
                         cls = 1 / (1 + np.exp(-np.clip(cls, -50, 50)))
 
                     class_ids_all = cls.argmax(axis=1)
+                    # v5/v7: score = objectness * class_prob
                     scores = obj * cls.max(axis=1)
                 else:
                     # Format v8/v11: [cx, cy, w, h, cls0, cls1, ...]
@@ -734,13 +932,14 @@ def benchmark_oak(model_path: str, num_classes: int, dataset: str = "coco128"):
                     boxes = out[:, :4]
                     cls = out[:, 4:]
 
-                    # Auto-sigmoid si logits détectés
+                    # Auto-sigmoid si logits detectes
                     if cls.min() < 0 or cls.max() > 1:
                         if i == 0:
-                            print("  [AUTO] Sigmoid appliqué sur classes")
+                            print("  [AUTO] Sigmoid applique sur classes")
                         cls = 1 / (1 + np.exp(-np.clip(cls, -50, 50)))
 
                     class_ids_all = cls.argmax(axis=1)
+                    # v8/v11: pas d'objectness, score = max(class_probs)
                     scores = cls.max(axis=1)
 
             except ValueError as e:
@@ -762,25 +961,34 @@ def benchmark_oak(model_path: str, num_classes: int, dataset: str = "coco128"):
 
             predictions = []
             if len(scores_filtered) > 0:
-                # --- PREPARATION POUR NMS (Format xywh requis par OpenCV) ---
-                # boxes_filtered est en [cx, cy, w, h] (format YOLO brut)
-                # OpenCV NMS demande [x_top_left, y_top_left, w, h]
-
+                # =============================================================
+                # PREPARATION POUR NMS
+                # =============================================================
+                # YOLO sort les boxes en [cx, cy, w, h] (centre + dimensions)
+                # OpenCV NMS attend [x, y, w, h] (coin top-left + dimensions)
+                # On garde aussi la version xyxy pour le reverse letterbox apres
+                # =============================================================
                 boxes_nms = []
-                boxes_xyxy = []  # On garde aussi la version xyxy pour apres le NMS
+                boxes_xyxy = []
 
                 for j in range(len(scores_filtered)):
                     cx, cy, w, h = boxes_filtered[j, 0:4]
-
-                    # 1. Format pour NMS [x, y, w, h]
                     x = cx - (w / 2)
                     y = cy - (h / 2)
-                    boxes_nms.append([x, y, w, h])
+                    boxes_nms.append([x, y, w, h])  # pour OpenCV NMS
+                    boxes_xyxy.append([x, y, x + w, y + h])  # pour nous
 
-                    # 2. Format pour nous (xyxy) pour le calcul final
-                    boxes_xyxy.append([x, y, x + w, y + h])
-
-                # --- NMS class-aware ---
+                # =============================================================
+                # NMS CLASS-AWARE
+                # =============================================================
+                # DECISION: Utiliser cv2.dnn.NMSBoxesBatched si disponible.
+                # POURQUOI: NMS class-aware = on ne supprime pas une box "chien"
+                #           a cause d'une box "chat" qui overlap.
+                #
+                # NOTE: Ultralytics utilise torchvision.nms. Les implementations
+                #       peuvent diverger legerement, mais en pratique c'est OK.
+                #       Voir DECISIONS DE CONCEPTION pour alternatives.
+                # =============================================================
                 if hasattr(cv2.dnn, "NMSBoxesBatched"):
                     indices = cv2.dnn.NMSBoxesBatched(
                         boxes_nms,
@@ -790,6 +998,7 @@ def benchmark_oak(model_path: str, num_classes: int, dataset: str = "coco128"):
                         NMS_IOU,
                     )
                 else:
+                    # Fallback: NMS par classe manuellement
                     keep = []
                     for c in np.unique(class_ids):
                         ids = np.where(class_ids == c)[0]
@@ -805,25 +1014,39 @@ def benchmark_oak(model_path: str, num_classes: int, dataset: str = "coco128"):
 
                 indices = np.array(indices).reshape(-1)
 
-                # --- CAP MAX_DET (équité avec GPU) ---
-                # Trier par score décroissant et garder les top-K
+                # =============================================================
+                # CAP MAX_DET (equite avec GPU)
+                # =============================================================
+                # DECISION: Limiter a MAX_DET detections apres NMS.
+                # POURQUOI: Ultralytics a max_det=300 par defaut. Sans ce cap,
+                #           OAK pourrait retourner plus de boxes et fausser P/R.
+                # =============================================================
                 if len(indices) > MAX_DET:
                     idx_scores = [(idx, scores_filtered[idx]) for idx in indices]
                     idx_scores.sort(key=lambda x: x[1], reverse=True)
                     indices = np.array([x[0] for x in idx_scores[:MAX_DET]])
 
+                # =============================================================
+                # REVERSE LETTERBOX + NORMALISATION
+                # =============================================================
+                # Les boxes sont en pixels dans l'espace 640x640 letterboxe.
+                # On doit:
+                # 1. Soustraire le padding (dw, dh)
+                # 2. Diviser par le ratio de scale
+                # 3. Normaliser en [0, 1] par rapport a l'image originale
+                # 4. Clamper pour eviter les valeurs hors bornes
+                # =============================================================
                 if len(indices) > 0:
                     for idx in indices.flatten():
-                        # On recupere la boite correspondante en xyxy
                         box = list(boxes_xyxy[idx])
 
-                        # --- REVERSE LETTERBOX ---
+                        # Reverse letterbox: espace 640x640 -> espace original
                         box[0] = (box[0] - dw) / ratio[0]  # x1
                         box[1] = (box[1] - dh) / ratio[1]  # y1
                         box[2] = (box[2] - dw) / ratio[0]  # x2
                         box[3] = (box[3] - dh) / ratio[1]  # y2
 
-                        # --- NORMALISATION ET CLAMPING ---
+                        # Normalisation [0, 1] + clamping
                         box[0] = max(0, min(1, box[0] / orig_w))
                         box[1] = max(0, min(1, box[1] / orig_h))
                         box[2] = max(0, min(1, box[2] / orig_w))
