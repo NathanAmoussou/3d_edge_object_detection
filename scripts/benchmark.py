@@ -4,6 +4,13 @@ Benchmark d'un modele YOLO sur GPU ou OAK-D.
 Usage:
     python scripts/benchmark.py --target 4070 --model models/base/yolo11n.pt
     python scripts/benchmark.py --target oak --model models/base/yolo11n_openvino_2022.1_6shave.blob --num-classes 80
+
+Options:
+    --dataset coco128|coco   : Dataset a utiliser (defaut: coco128)
+                               - coco128: rapide, 128 images (equite GPU vs OAK)
+                               - coco: COCO val2017, 5000 images (baseline scientifique)
+    --pixel-perfect          : Meme letterbox GPU/OAK pour equite (defaut: active)
+    --no-pixel-perfect       : Laisser Ultralytics gerer le preprocess GPU
 """
 
 import argparse
@@ -43,7 +50,8 @@ def save_results(
     hardware: str,
     model_name: str,
     size_mb: float,
-    inference_time_ms: float,
+    e2e_time_ms: float,
+    device_time_ms: float,
     map50: float,
     precision: float,
     recall: float,
@@ -61,7 +69,8 @@ def save_results(
                     "Hardware",
                     "Model_Name",
                     "Size_MB",
-                    "Inference_Time_ms",
+                    "E2E_Time_ms",
+                    "Device_Time_ms",
                     "mAP50",
                     "Precision",
                     "Recall",
@@ -74,7 +83,8 @@ def save_results(
                 hardware,
                 model_name,
                 f"{size_mb:.2f}",
-                f"{inference_time_ms:.2f}",
+                f"{e2e_time_ms:.2f}",
+                f"{device_time_ms:.2f}",
                 f"{map50:.4f}",
                 f"{precision:.4f}",
                 f"{recall:.4f}",
@@ -85,13 +95,27 @@ def save_results(
     print(f"\nResultats sauvegardes dans: {RESULTS_FILE}")
 
 
-def load_coco128_dataset():
-    """Charge le dataset COCO128 (images + labels)."""
+def load_coco128_dataset(dataset: str = "coco128"):
+    """Charge le dataset COCO128 ou COCO val2017 (images + labels).
+
+    Args:
+        dataset: "coco128" pour coco128/train2017 (rapide, 128 images)
+                 "coco" pour COCO val2017 (baseline scientifique, 5000 images)
+    """
     from ultralytics.data.utils import check_det_dataset
 
-    data = check_det_dataset("coco128.yaml")
-    val_images_dir = Path(data["path"]) / "images" / "train2017"
-    val_labels_dir = Path(data["path"]) / "labels" / "train2017"
+    if dataset == "coco":
+        # COCO val2017 - vrai set de validation pour baseline scientifique
+        data = check_det_dataset("coco.yaml")
+        val_images_dir = Path(data["path"]) / "images" / "val2017"
+        val_labels_dir = Path(data["path"]) / "labels" / "val2017"
+        print("[Dataset] COCO val2017 (baseline scientifique)")
+    else:
+        # coco128 - rapide pour tests GPU vs OAK
+        data = check_det_dataset("coco128.yaml")
+        val_images_dir = Path(data["path"]) / "images" / "train2017"
+        val_labels_dir = Path(data["path"]) / "labels" / "train2017"
+        print("[Dataset] coco128/train2017 (equite GPU vs OAK, pas baseline)")
 
     image_files = sorted(val_images_dir.glob("*.jpg"))
 
@@ -258,8 +282,18 @@ def compute_map50_prf1(all_predictions, all_ground_truths, conf_op=0.25, iou_thr
 # =============================================================================
 
 
-def benchmark_gpu(model_path: str, num_classes: int):
-    """Benchmark sur GPU NVIDIA via Ultralytics."""
+def benchmark_gpu(
+    model_path: str,
+    num_classes: int,
+    pixel_perfect: bool = True,
+    dataset: str = "coco128",
+):
+    """Benchmark sur GPU NVIDIA via Ultralytics.
+
+    Args:
+        pixel_perfect: Si True, applique le même letterbox que OAK pour équité.
+        dataset: "coco128" ou "coco" pour COCO val2017.
+    """
     from ultralytics import YOLO
 
     print("=" * 60)
@@ -271,53 +305,101 @@ def benchmark_gpu(model_path: str, num_classes: int):
 
     print(f"Modele: {model_path}")
     print(f"Taille: {size_mb:.2f} MB")
+    print(f"Pixel-perfect (meme preprocess que OAK): {pixel_perfect}")
 
     # Charger le modele
     model = YOLO(model_path)
     print(f"Classes: {len(model.names)}")
 
-    print("\nInference sur COCO128 (GPU)...")
-    dataset = load_coco128_dataset()
+    print(f"\nInference sur {dataset.upper()} (GPU)...")
+    data = load_coco128_dataset(dataset)
     all_predictions = []
     all_ground_truths = []
-    inference_times = []
+    e2e_times = []
+    device_times = []
 
-    for sample in dataset:
+    for sample in data:
         img = cv2.imread(sample["image_path"])
         if img is None:
             continue
 
         orig_h, orig_w = img.shape[:2]
 
-        start_time = time.perf_counter()
-        result = model.predict(
-            img,
-            imgsz=IMGSZ,
-            conf=CONF_EVAL,
-            iou=NMS_IOU,
-            max_det=3000,
-            device=0,
-            verbose=False,
-        )[0]
+        t0 = time.perf_counter()
 
-        preds = []
-        for b in result.boxes:
-            x1, y1, x2, y2 = b.xyxy[0].tolist()
-            preds.append(
-                {
-                    "box": [
-                        x1 / orig_w,
-                        y1 / orig_h,
-                        x2 / orig_w,
-                        y2 / orig_h,
-                    ],
-                    "class_id": int(b.cls.item()),
-                    "confidence": float(b.conf.item()),
-                }
-            )
+        if pixel_perfect:
+            # Appliquer le même letterbox que OAK pour équité pixel-perfect
+            img_lb, ratio, (dw, dh) = letterbox(img, (IMGSZ, IMGSZ))
+            result = model.predict(
+                img_lb,
+                imgsz=IMGSZ,
+                conf=CONF_EVAL,
+                iou=NMS_IOU,
+                max_det=3000,
+                device=0,
+                verbose=False,
+            )[0]
 
-        end_time = time.perf_counter()
-        inference_times.append((end_time - start_time) * 1000)
+            preds = []
+            for b in result.boxes:
+                x1, y1, x2, y2 = b.xyxy[0].tolist()
+                # Reverse letterbox (même logique que OAK)
+                x1 = (x1 - dw) / ratio[0]
+                y1 = (y1 - dh) / ratio[1]
+                x2 = (x2 - dw) / ratio[0]
+                y2 = (y2 - dh) / ratio[1]
+                # Normalisation et clamping
+                preds.append(
+                    {
+                        "box": [
+                            max(0, min(1, x1 / orig_w)),
+                            max(0, min(1, y1 / orig_h)),
+                            max(0, min(1, x2 / orig_w)),
+                            max(0, min(1, y2 / orig_h)),
+                        ],
+                        "class_id": int(b.cls.item()),
+                        "confidence": float(b.conf.item()),
+                    }
+                )
+        else:
+            # Mode original: Ultralytics gère le preprocessing
+            result = model.predict(
+                img,
+                imgsz=IMGSZ,
+                conf=CONF_EVAL,
+                iou=NMS_IOU,
+                max_det=3000,
+                device=0,
+                verbose=False,
+            )[0]
+
+            preds = []
+            for b in result.boxes:
+                x1, y1, x2, y2 = b.xyxy[0].tolist()
+                preds.append(
+                    {
+                        "box": [
+                            x1 / orig_w,
+                            y1 / orig_h,
+                            x2 / orig_w,
+                            y2 / orig_h,
+                        ],
+                        "class_id": int(b.cls.item()),
+                        "confidence": float(b.conf.item()),
+                    }
+                )
+
+        t1 = time.perf_counter()
+        e2e_times.append((t1 - t0) * 1000)
+
+        nn_ms = (
+            float(result.speed.get("inference", 0.0))
+            if hasattr(result, "speed") and isinstance(result.speed, dict)
+            else 0.0
+        )
+        if nn_ms <= 0.0:
+            nn_ms = (t1 - t0) * 1000
+        device_times.append(nn_ms)
 
         all_predictions.append(preds)
 
@@ -346,7 +428,8 @@ def benchmark_gpu(model_path: str, num_classes: int):
         all_predictions, all_ground_truths, conf_op=CONF_OP, iou_thr=MATCH_IOU
     )
 
-    inference_time_ms = float(np.mean(inference_times)) if inference_times else 0.0
+    e2e_time_ms = float(np.mean(e2e_times)) if e2e_times else 0.0
+    device_time_ms = float(np.mean(device_times)) if device_times else 0.0
     map50 = metrics["map50"]
     precision = metrics["precision"]
     recall = metrics["recall"]
@@ -357,7 +440,8 @@ def benchmark_gpu(model_path: str, num_classes: int):
     print("RESULTATS GPU")
     print("-" * 40)
     print(f"Taille modele  : {size_mb:.2f} MB")
-    print(f"Temps inference: {inference_time_ms:.2f} ms")
+    print(f"Temps inference (end-to-end): {e2e_time_ms:.2f} ms")
+    print(f"Temps NN-only (device):       {device_time_ms:.2f} ms")
     print(f"mAP50          : {map50:.4f}")
     print(f"Precision      : {precision:.4f}")
     print(f"Recall         : {recall:.4f}")
@@ -367,7 +451,8 @@ def benchmark_gpu(model_path: str, num_classes: int):
         hardware="GPU_RTX4070",
         model_name=model_name,
         size_mb=size_mb,
-        inference_time_ms=inference_time_ms,
+        e2e_time_ms=e2e_time_ms,
+        device_time_ms=device_time_ms,
         map50=map50,
         precision=precision,
         recall=recall,
@@ -380,8 +465,12 @@ def benchmark_gpu(model_path: str, num_classes: int):
 # =============================================================================
 
 
-def benchmark_oak(model_path: str, num_classes: int):
-    """Benchmark sur OAK-D (Myriad X VPU)."""
+def benchmark_oak(model_path: str, num_classes: int, dataset: str = "coco128"):
+    """Benchmark sur OAK-D (Myriad X VPU).
+
+    Args:
+        dataset: "coco128" ou "coco" pour COCO val2017.
+    """
     import depthai as dai
 
     print("=" * 60)
@@ -396,9 +485,9 @@ def benchmark_oak(model_path: str, num_classes: int):
     print(f"Classes: {num_classes}")
 
     # Charger le dataset
-    print("\nChargement du dataset COCO128...")
-    dataset = load_coco128_dataset()
-    print(f"Images: {len(dataset)}")
+    print(f"\nChargement du dataset {dataset.upper()}...")
+    data = load_coco128_dataset(dataset)
+    print(f"Images: {len(data)}")
 
     # Pipeline DepthAI
     pipeline = dai.Pipeline()
@@ -421,19 +510,24 @@ def benchmark_oak(model_path: str, num_classes: int):
     print("\nInference sur OAK-D...")
     all_predictions = []
     all_ground_truths = []
-    inference_times = []
+    e2e_times = []
+    device_times = []
+    preprocess_times = []
+    postprocess_times = []
 
     with dai.Device(pipeline) as device:
         q_in = device.getInputQueue("input")
         q_out = device.getOutputQueue("nn", maxSize=1, blocking=True)
 
-        for i, sample in enumerate(dataset):
+        output_layers = None
+
+        for i, sample in enumerate(data):
             img = cv2.imread(sample["image_path"])
             if img is None:
                 continue
 
             orig_h, orig_w = img.shape[:2]
-            start_time = time.perf_counter()
+            t0 = time.perf_counter()
 
             # Letterbox en BGR (pas de conversion RGB, le preprocess est dans le blob)
             img_lb, ratio, (dw, dh) = letterbox(img, (IMGSZ, IMGSZ))
@@ -442,6 +536,8 @@ def benchmark_oak(model_path: str, num_classes: int):
             img_chw = np.ascontiguousarray(
                 img_lb.transpose(2, 0, 1)
             )  # shape (3, H, W), uint8
+
+            t1 = time.perf_counter()
 
             # Frame DepthAI
             dai_frame = dai.ImgFrame()
@@ -454,14 +550,57 @@ def benchmark_oak(model_path: str, num_classes: int):
             q_in.send(dai_frame)
             in_nn = q_out.get()
 
+            t2 = time.perf_counter()
+
             # Decoder
-            output_layers = in_nn.getAllLayerNames()
+            if output_layers is None:
+                output_layers = in_nn.getAllLayerNames()
             raw_data = np.array(in_nn.getLayerFp16(output_layers[0]))
+
+            # --- SANITY-CHECK DU FORMAT DE SORTIE OAK ---
+            if i == 0:
+                print("\n[Sanity-check] Format de sortie OAK:")
+                print(f"  - Forme brute        : {raw_data.shape}")
+                print(
+                    f"  - Min / Max          : {raw_data.min():.4f} / {raw_data.max():.4f}"
+                )
+                expected_size = (
+                    (num_classes + 4) * (IMGSZ // 8) ** 2
+                    + (num_classes + 4) * (IMGSZ // 16) ** 2
+                    + (num_classes + 4) * (IMGSZ // 32) ** 2
+                )
+                print(f"  - Taille attendue    : {expected_size} (3 heads concaténées)")
+                has_objectness = raw_data.size == (num_classes + 5) * (
+                    (IMGSZ // 8) ** 2 + (IMGSZ // 16) ** 2 + (IMGSZ // 32) ** 2
+                )
+                print(
+                    f"  - Objectness détecté : {'OUI (v5/v7 style)' if has_objectness else 'NON (v8/v11 style)'}"
+                )
+                if has_objectness:
+                    print(
+                        "  [ATTENTION] Le blob semble avoir un objectness - vérifiez le décodage!"
+                    )
 
             try:
                 data = raw_data.reshape(num_classes + 4, -1).transpose()
-            except ValueError:
+            except ValueError as e:
+                if i == 0:
+                    print(f"  [ERREUR RESHAPE] {e}")
+                    print(
+                        f"  - Taille réelle: {raw_data.size}, attendu: multiple de {num_classes + 4}"
+                    )
                 continue
+
+            # Sanity-check des scores (première image uniquement)
+            if i == 0:
+                scores_check = np.max(data[:, 4:], axis=1)
+                print(
+                    f"  - Score range        : {scores_check.min():.4f} - {scores_check.max():.4f}"
+                )
+                if scores_check.max() > 1.0 or scores_check.min() < 0.0:
+                    print(
+                        "  [ATTENTION] Scores hors [0,1] - vérifiez si softmax/sigmoid est appliqué!"
+                    )
 
             scores = np.max(data[:, 4:], axis=1)
             mask = scores > CONF_EVAL
@@ -539,8 +678,11 @@ def benchmark_oak(model_path: str, num_classes: int):
                             }
                         )
 
-            end_time = time.perf_counter()
-            inference_times.append((end_time - start_time) * 1000)
+            t3 = time.perf_counter()
+            e2e_times.append((t3 - t0) * 1000)
+            device_times.append((t2 - t1) * 1000)
+            preprocess_times.append((t1 - t0) * 1000)
+            postprocess_times.append((t3 - t2) * 1000)
 
             all_predictions.append(predictions)
 
@@ -567,7 +709,7 @@ def benchmark_oak(model_path: str, num_classes: int):
             all_ground_truths.append(gt_list)
 
             if (i + 1) % 20 == 0:
-                print(f"  {i + 1}/{len(dataset)} images...")
+                print(f"  {i + 1}/{len(data)} images...")
 
     # Metriques
     print("\nCalcul des metriques...")
@@ -575,7 +717,12 @@ def benchmark_oak(model_path: str, num_classes: int):
         all_predictions, all_ground_truths, conf_op=CONF_OP, iou_thr=MATCH_IOU
     )
 
-    avg_inference_time = float(np.mean(inference_times)) if inference_times else 0.0
+    avg_e2e_time = float(np.mean(e2e_times)) if e2e_times else 0.0
+    avg_device_time = float(np.mean(device_times)) if device_times else 0.0
+    avg_preprocess_time = float(np.mean(preprocess_times)) if preprocess_times else 0.0
+    avg_postprocess_time = (
+        float(np.mean(postprocess_times)) if postprocess_times else 0.0
+    )
     precision = metrics["precision"]
     recall = metrics["recall"]
     map50 = metrics["map50"]
@@ -586,7 +733,10 @@ def benchmark_oak(model_path: str, num_classes: int):
     print("RESULTATS OAK-D")
     print("-" * 40)
     print(f"Taille blob    : {size_mb:.2f} MB")
-    print(f"Temps inference: {avg_inference_time:.2f} ms")
+    print(f"Temps end-to-end : {avg_e2e_time:.2f} ms")
+    print(f"Temps send→get  : {avg_device_time:.2f} ms")
+    print(f"Temps preprocess : {avg_preprocess_time:.2f} ms")
+    print(f"Temps postprocess: {avg_postprocess_time:.2f} ms")
     print(f"mAP50          : {map50:.4f}")
     print(f"Precision      : {precision:.4f}")
     print(f"Recall         : {recall:.4f}")
@@ -596,7 +746,8 @@ def benchmark_oak(model_path: str, num_classes: int):
         hardware="OAK_MyriadX",
         model_name=model_name,
         size_mb=size_mb,
-        inference_time_ms=avg_inference_time,
+        e2e_time_ms=avg_e2e_time,
+        device_time_ms=avg_device_time,
         map50=map50,
         precision=precision,
         recall=recall,
@@ -632,8 +783,29 @@ def main():
         default=80,
         help="Nombre de classes du modele (defaut: 80 pour COCO)",
     )
+    parser.add_argument(
+        "--dataset",
+        type=str,
+        default="coco128",
+        choices=["coco128", "coco"],
+        help="Dataset: 'coco128' (rapide, 128 images) ou 'coco' (val2017, baseline scientifique)",
+    )
+    parser.add_argument(
+        "--pixel-perfect",
+        action="store_true",
+        default=True,
+        help="Appliquer le meme letterbox GPU/OAK pour equite (defaut: True)",
+    )
+    parser.add_argument(
+        "--no-pixel-perfect",
+        action="store_true",
+        help="Desactiver le mode pixel-perfect (Ultralytics gere le preprocess GPU)",
+    )
 
     args = parser.parse_args()
+
+    # Gerer --no-pixel-perfect
+    pixel_perfect = not args.no_pixel_perfect
 
     # Resoudre le chemin
     model_path = Path(args.model)
@@ -655,9 +827,14 @@ def main():
 
     # Benchmark
     if args.target == "4070":
-        benchmark_gpu(model_path, args.num_classes)
+        benchmark_gpu(
+            model_path,
+            args.num_classes,
+            pixel_perfect=pixel_perfect,
+            dataset=args.dataset,
+        )
     elif args.target == "oak":
-        benchmark_oak(model_path, args.num_classes)
+        benchmark_oak(model_path, args.num_classes, dataset=args.dataset)
 
     return 0
 
