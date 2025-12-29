@@ -17,7 +17,7 @@
 
 ### Optimisations spécifiques à chaque matériel
 - À compléter
-### Ordre des optimisations
+## Ordre des optimisations
 - Sans **distillation** :
 	1. Élagage
 	2. Quantification + *Input resolution*
@@ -26,7 +26,7 @@
 	1. Élagage + Distillation
 	2. Quantification + *Input resolution*
 	3. Fusion
-### Algorithme de productions des variantes
+## Algorithme de productions des variantes
 ```
 elagage_bins = [yolo11m, yolo11s, yolo11n]
 distillation_bins = [False, True]
@@ -41,12 +41,12 @@ for d in distillation_bins:
 				for f in fusion_bins:
 					ProduceVariant(d, e, q, r, f)
 ```
-#### Remarques
+### Remarques
 - Pour un *hardware* donné, définir le point de départ, la variante la moins optimisée, puis appliquer progressivement des optimisations.
 - Tous les *hardwares* n'auront pas le même point de départ.
 - La couche distillation risque d'être lente. D'abord développer tous les modèles sans distillation, ensuite aviser.
 - **Se renseigner sur les optimisations obligatoires ou par défaut appliquées lors des différentes compilations (Blob, ONNX...).**
-### Point de départ de chaque *hardware*
+## Point de départ de chaque *hardware*
 
 | *Hardware*                | Élagage min.          | Quantification min. | Résolution min. | Fusion min.        |
 | ------------------------- | --------------------- | ------------------- | --------------- | ------------------ |
@@ -55,7 +55,7 @@ for d in distillation_bins:
 | OAK-D Pro (Myriad X)      | `yolo11m`             | `fp16`              | `640`           | Obligatoire (Blob) |
 | Jetson Orin Nano 4GB      | `yolo11m` ? `yolo11s` | `fp16`              | `640`           | `ORT_DISABLE_ALL`  |
 | Raspberry Pi 4B           | `yolo11n` ?           | `fp32`              | `640`           | `ORT_DISABLE_ALL`  |
-#### Remarques
+### Remarques
 - Pour le OAK-D Pro (Myriad X) :
 	- Le `yolo11m` est la limite haute théorique qui compile souvent, parfois au prix d'une réduction de résolution ou de shaves, si `m` ne compile pas, descendre à `s`.
 	- Myriad X ne supporte pas le `fp32` nativement, notre *baseline* la moins optimisée est donc obligatoirement le `fp16`.
@@ -67,3 +67,9 @@ for d in distillation_bins:
 	-  On peut techniquement lancer un `yolo11s` ou `m` en `fp32`, mais on aura une latence de 2 à 10 secondes par image.
 - La fusion de couches et la quantification `int8` seront faites à l'inférence.
 - Du coup, peut-être utiliser les `.json` lors du *bench* pour formater les images à la bonne taille, par exemple.
+## *Roadmap*
+- [x] Implémenter les optimisations avant le *runtime*
+	- Fait avec `scripts/generate_variants.py`
+- [ ] Implémenter les optimisations aux *runtime*
+	- Où faire ça ? Au niveau du compilateur ?
+- [ ] Implémenter les optimisations spécifiques à chaque *hardware*

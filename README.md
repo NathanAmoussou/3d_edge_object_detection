@@ -39,7 +39,7 @@
 ### Métriques combinées
 - FPS / Watt (Efficacité), combien d'images on traite pour 1 Watt
 - Densité de performance, FPS / Prix du matériel ($)
-## Roadmap
+## *Roadmap*
 - [x] Trouver un modèle compatible avec les différents matériels, qu'on puisse ***fine-tuner***  et **manipuler** (appliquer les optimisations)
 	- [`YOLO11`](https://github.com/ultralytics/ultralytics)
 - [x] *Fine-tuner* ce modèle pour détecter des **cubes rouges**

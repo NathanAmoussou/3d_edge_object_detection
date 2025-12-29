@@ -27,6 +27,7 @@ from pathlib import Path
 
 # --- Configuration ---
 ROOT_DIR = Path(__file__).parent.parent.resolve()
+BASE_MODELS_DIR = ROOT_DIR / "models" / "base"
 DEFAULT_OUTPUT_DIR = ROOT_DIR / "models" / "variants"
 
 # Bins selon AI_models.md
@@ -65,7 +66,8 @@ def get_variant_name(scale: str, imgsz: int, quant: str) -> str:
 
 def download_base_model(scale: str):
     """
-    Telecharge un modele YOLO11 de base depuis Ultralytics.
+    Charge un modele YOLO11 de base depuis models/base/.
+    Telecharge depuis Ultralytics si absent.
 
     Args:
         scale: Echelle du modele (n, s, m)
@@ -76,10 +78,23 @@ def download_base_model(scale: str):
     from ultralytics import YOLO
 
     model_name = f"yolo11{scale}.pt"
-    print(f"  Chargement de {model_name}...")
+    model_path = BASE_MODELS_DIR / model_name
 
-    # YOLO() telecharge automatiquement si le modele n'existe pas
-    model = YOLO(f"yolo11{scale}.pt")
+    # Creer le dossier si besoin
+    BASE_MODELS_DIR.mkdir(parents=True, exist_ok=True)
+
+    if model_path.exists():
+        print(f"  Chargement de {model_path}...")
+        model = YOLO(str(model_path))
+    else:
+        print(f"  Telechargement de {model_name} vers {BASE_MODELS_DIR}...")
+        # Telecharge dans le dossier courant puis deplace
+        model = YOLO(model_name)
+        # Ultralytics telecharge dans le cwd, deplacer vers models/base/
+        downloaded_path = Path(model_name)
+        if downloaded_path.exists() and downloaded_path != model_path:
+            shutil.move(str(downloaded_path), str(model_path))
+            print(f"    -> Sauvegarde dans {model_path}")
 
     return model
 
