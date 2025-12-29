@@ -65,3 +65,5 @@ for d in distillation_bins:
 	- `fp16` et la pratique courante, mais à tester `fp32`.
 - Pour Raspberry Pi 4B :
 	-  On peut techniquement lancer un `yolo11s` ou `m` en `fp32`, mais on aura une latence de 2 à 10 secondes par image.
+- La fusion de couches et la quantification `int8` seront faites à l'inférence.
+- Du coup, peut-être utiliser les `.json` lors du *bench* pour formater les images à la bonne taille, par exemple.
