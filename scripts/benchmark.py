@@ -101,6 +101,58 @@ WARMUP_FRAMES = 10
 # =============================================================================
 
 
+def compute_timing_stats(
+    e2e_times: list[float],
+    preprocess_times: list[float],
+    inference_times: list[float],
+    postprocess_times: list[float],
+) -> dict:
+    """
+    Calcule les statistiques de timing etendues.
+
+    Args:
+        e2e_times: Liste des temps E2E en ms
+        preprocess_times: Liste des temps preprocess en ms
+        inference_times: Liste des temps inference en ms
+        postprocess_times: Liste des temps postprocess en ms
+
+    Returns:
+        Dict avec: e2e_mean, latency_p50/p90/p95/p99, preprocess_ms,
+                   inference_ms, postprocess_ms, fps
+    """
+    if not e2e_times:
+        return {
+            "e2e_mean": 0.0,
+            "latency_p50": 0.0,
+            "latency_p90": 0.0,
+            "latency_p95": 0.0,
+            "latency_p99": 0.0,
+            "preprocess_ms": 0.0,
+            "inference_ms": 0.0,
+            "postprocess_ms": 0.0,
+            "fps": 0.0,
+        }
+
+    e2e_arr = np.array(e2e_times)
+
+    e2e_mean = float(np.mean(e2e_arr))
+    fps = 1000.0 / e2e_mean if e2e_mean > 0 else 0.0
+
+    return {
+        "e2e_mean": e2e_mean,
+        "latency_p50": float(np.percentile(e2e_arr, 50)),
+        "latency_p90": float(np.percentile(e2e_arr, 90)),
+        "latency_p95": float(np.percentile(e2e_arr, 95)),
+        "latency_p99": float(np.percentile(e2e_arr, 99)),
+        "preprocess_ms": float(np.mean(preprocess_times)) if preprocess_times else 0.0,
+        "inference_ms": float(np.mean(inference_times)) if inference_times else 0.0,
+        "postprocess_ms": float(np.mean(postprocess_times))
+        if postprocess_times
+        else 0.0,
+        "fps": fps,
+    }
+
+
 def parse_imgsz_from_filename(filepath: str) -> int:
     """
     Parse imgsz depuis le nom du fichier.
@@ -205,6 +257,15 @@ def save_results(
     f1: float,
     dataset: str = "coco128",
     backend: str = "N/A",
+    # Extended timing metrics (Phase 3)
+    latency_p50: float = 0.0,
+    latency_p90: float = 0.0,
+    latency_p95: float = 0.0,
+    latency_p99: float = 0.0,
+    preprocess_ms: float = 0.0,
+    inference_ms: float = 0.0,
+    postprocess_ms: float = 0.0,
+    fps: float = 0.0,
 ):
     """
     Sauvegarde les resultats dans le CSV avec metadonnees completes.
@@ -215,6 +276,13 @@ def save_results(
     - Orin: inference pure (session.run)
 
     Pour comparaison fair, utiliser E2E_Time_ms.
+
+    Extended metrics (Phase 3):
+    - latency_p50/p90/p95/p99: Percentiles E2E latence (ms)
+    - preprocess_ms: Temps moyen preprocessing (ms)
+    - inference_ms: Temps moyen inference (ms)
+    - postprocess_ms: Temps moyen postprocessing (ms)
+    - fps: Throughput (images/sec)
     """
     file_exists = RESULTS_FILE.exists()
     versions = get_versions()
@@ -235,6 +303,15 @@ def save_results(
                     "Precision",
                     "Recall",
                     "F1",
+                    # Extended timing (Phase 3)
+                    "Latency_p50",
+                    "Latency_p90",
+                    "Latency_p95",
+                    "Latency_p99",
+                    "Preprocess_ms",
+                    "Inference_ms",
+                    "Postprocess_ms",
+                    "FPS",
                     # Metadonnees
                     "Dataset",
                     "Backend",
@@ -267,6 +344,15 @@ def save_results(
                 f"{precision:.4f}",
                 f"{recall:.4f}",
                 f"{f1:.4f}",
+                # Extended timing (Phase 3)
+                f"{latency_p50:.2f}",
+                f"{latency_p90:.2f}",
+                f"{latency_p95:.2f}",
+                f"{latency_p99:.2f}",
+                f"{preprocess_ms:.2f}",
+                f"{inference_ms:.2f}",
+                f"{postprocess_ms:.2f}",
+                f"{fps:.2f}",
                 # Metadonnees
                 dataset,
                 backend,
@@ -711,7 +797,9 @@ def benchmark_gpu_ort(
     all_predictions = []
     all_ground_truths = []
     e2e_times = []
-    device_times = []
+    preprocess_times = []
+    inference_times = []
+    postprocess_times = []
     first_frame = True
 
     for idx, sample in enumerate(dataset_items):
@@ -765,7 +853,9 @@ def benchmark_gpu_ort(
         t3 = time.perf_counter()
 
         e2e_times.append((t3 - t0) * 1000)
-        device_times.append((t2 - t1) * 1000)
+        preprocess_times.append((t1 - t0) * 1000)
+        inference_times.append((t2 - t1) * 1000)
+        postprocess_times.append((t3 - t2) * 1000)
 
         all_predictions.append(predictions)
 
@@ -798,16 +888,24 @@ def benchmark_gpu_ort(
         all_predictions, all_ground_truths, conf_op=CONF_OP, iou_thr=MATCH_IOU
     )
 
-    e2e_time_ms = float(np.mean(e2e_times)) if e2e_times else 0.0
-    device_time_ms = float(np.mean(device_times)) if device_times else 0.0
+    # Compute extended timing stats
+    timing = compute_timing_stats(
+        e2e_times, preprocess_times, inference_times, postprocess_times
+    )
 
     print("\n" + "-" * 40)
     print("RESULTATS GPU (ONNX Runtime)")
     print("-" * 40)
     print(f"Taille modele       : {size_mb:.2f} MB")
     print(f"ImgSz               : {imgsz}")
-    print(f"Temps E2E           : {e2e_time_ms:.2f} ms")
-    print(f"Temps inference     : {device_time_ms:.2f} ms")
+    print(f"Temps E2E moyen     : {timing['e2e_mean']:.2f} ms")
+    print(f"  Preprocess        : {timing['preprocess_ms']:.2f} ms")
+    print(f"  Inference         : {timing['inference_ms']:.2f} ms")
+    print(f"  Postprocess       : {timing['postprocess_ms']:.2f} ms")
+    print(
+        f"Latence p50/p90/p99 : {timing['latency_p50']:.2f} / {timing['latency_p90']:.2f} / {timing['latency_p99']:.2f} ms"
+    )
+    print(f"FPS                 : {timing['fps']:.1f}")
     print(f"mAP50               : {metrics['map50']:.4f}")
     print(f"Precision           : {metrics['precision']:.4f}")
     print(f"Recall              : {metrics['recall']:.4f}")
@@ -819,14 +917,23 @@ def benchmark_gpu_ort(
         model_name=model_name,
         size_mb=size_mb,
         imgsz=imgsz,
-        e2e_time_ms=e2e_time_ms,
-        device_time_ms=device_time_ms,
+        e2e_time_ms=timing["e2e_mean"],
+        device_time_ms=timing["inference_ms"],
         map50=metrics["map50"],
         precision=metrics["precision"],
         recall=metrics["recall"],
         f1=metrics["f1"],
         dataset=dataset,
         backend="onnxruntime",
+        # Extended timing (Phase 3)
+        latency_p50=timing["latency_p50"],
+        latency_p90=timing["latency_p90"],
+        latency_p95=timing["latency_p95"],
+        latency_p99=timing["latency_p99"],
+        preprocess_ms=timing["preprocess_ms"],
+        inference_ms=timing["inference_ms"],
+        postprocess_ms=timing["postprocess_ms"],
+        fps=timing["fps"],
     )
 
 
@@ -886,7 +993,9 @@ def benchmark_gpu_ultralytics(
     all_predictions = []
     all_ground_truths = []
     e2e_times = []
-    device_times = []
+    preprocess_times = []
+    inference_times = []
+    postprocess_times = []
 
     with torch.inference_mode():
         for idx, sample in enumerate(dataset_items):
@@ -932,14 +1041,16 @@ def benchmark_gpu_ultralytics(
             t1 = time.perf_counter()
             e2e_times.append((t1 - t0) * 1000)
 
-            nn_ms = (
-                float(result.speed.get("inference", 0.0))
-                if hasattr(result, "speed") and isinstance(result.speed, dict)
-                else 0.0
-            )
-            if nn_ms <= 0.0:
-                nn_ms = (t1 - t0) * 1000
-            device_times.append(nn_ms)
+            # Extract timing from Ultralytics result.speed if available
+            if hasattr(result, "speed") and isinstance(result.speed, dict):
+                preprocess_times.append(float(result.speed.get("preprocess", 0.0)))
+                inference_times.append(float(result.speed.get("inference", 0.0)))
+                postprocess_times.append(float(result.speed.get("postprocess", 0.0)))
+            else:
+                # Fallback: attribute all time to inference
+                preprocess_times.append(0.0)
+                inference_times.append((t1 - t0) * 1000)
+                postprocess_times.append(0.0)
 
             all_predictions.append(preds)
 
@@ -968,16 +1079,24 @@ def benchmark_gpu_ultralytics(
         all_predictions, all_ground_truths, conf_op=CONF_OP, iou_thr=MATCH_IOU
     )
 
-    e2e_time_ms = float(np.mean(e2e_times)) if e2e_times else 0.0
-    device_time_ms = float(np.mean(device_times)) if device_times else 0.0
+    # Compute extended timing stats
+    timing = compute_timing_stats(
+        e2e_times, preprocess_times, inference_times, postprocess_times
+    )
 
     print("\n" + "-" * 40)
     print("RESULTATS GPU (Ultralytics)")
     print("-" * 40)
     print(f"Taille modele       : {size_mb:.2f} MB")
     print(f"ImgSz               : {imgsz}")
-    print(f"Temps E2E           : {e2e_time_ms:.2f} ms")
-    print(f"Temps device        : {device_time_ms:.2f} ms")
+    print(f"Temps E2E moyen     : {timing['e2e_mean']:.2f} ms")
+    print(f"  Preprocess        : {timing['preprocess_ms']:.2f} ms")
+    print(f"  Inference         : {timing['inference_ms']:.2f} ms")
+    print(f"  Postprocess       : {timing['postprocess_ms']:.2f} ms")
+    print(
+        f"Latence p50/p90/p99 : {timing['latency_p50']:.2f} / {timing['latency_p90']:.2f} / {timing['latency_p99']:.2f} ms"
+    )
+    print(f"FPS                 : {timing['fps']:.1f}")
     print(f"mAP50               : {metrics['map50']:.4f}")
     print(f"Precision           : {metrics['precision']:.4f}")
     print(f"Recall              : {metrics['recall']:.4f}")
@@ -988,14 +1107,23 @@ def benchmark_gpu_ultralytics(
         model_name=model_name,
         size_mb=size_mb,
         imgsz=imgsz,
-        e2e_time_ms=e2e_time_ms,
-        device_time_ms=device_time_ms,
+        e2e_time_ms=timing["e2e_mean"],
+        device_time_ms=timing["inference_ms"],
         map50=metrics["map50"],
         precision=metrics["precision"],
         recall=metrics["recall"],
         f1=metrics["f1"],
         dataset=dataset,
         backend="ultralytics",
+        # Extended timing (Phase 3)
+        latency_p50=timing["latency_p50"],
+        latency_p90=timing["latency_p90"],
+        latency_p95=timing["latency_p95"],
+        latency_p99=timing["latency_p99"],
+        preprocess_ms=timing["preprocess_ms"],
+        inference_ms=timing["inference_ms"],
+        postprocess_ms=timing["postprocess_ms"],
+        fps=timing["fps"],
     )
 
 
@@ -1045,7 +1173,9 @@ def benchmark_oak(model_path: str, num_classes: int, dataset: str = "coco128"):
     all_predictions = []
     all_ground_truths = []
     e2e_times = []
-    device_times = []
+    preprocess_times = []
+    inference_times = []
+    postprocess_times = []
 
     with dai.Device(pipeline) as device:
         q_in = device.getInputQueue("input")
@@ -1130,7 +1260,9 @@ def benchmark_oak(model_path: str, num_classes: int, dataset: str = "coco128"):
 
             t3 = time.perf_counter()
             e2e_times.append((t3 - t0) * 1000)
-            device_times.append((t2 - t1) * 1000)  # Note: inclut USB, pas VPU seul
+            preprocess_times.append((t1 - t0) * 1000)
+            inference_times.append((t2 - t1) * 1000)  # Note: inclut USB, pas VPU seul
+            postprocess_times.append((t3 - t2) * 1000)
 
             all_predictions.append(predictions)
 
@@ -1163,16 +1295,24 @@ def benchmark_oak(model_path: str, num_classes: int, dataset: str = "coco128"):
         all_predictions, all_ground_truths, conf_op=CONF_OP, iou_thr=MATCH_IOU
     )
 
-    e2e_time_ms = float(np.mean(e2e_times)) if e2e_times else 0.0
-    device_time_ms = float(np.mean(device_times)) if device_times else 0.0
+    # Compute extended timing stats
+    timing = compute_timing_stats(
+        e2e_times, preprocess_times, inference_times, postprocess_times
+    )
 
     print("\n" + "-" * 40)
     print("RESULTATS OAK-D")
     print("-" * 40)
     print(f"Taille blob         : {size_mb:.2f} MB")
     print(f"ImgSz               : {imgsz}")
-    print(f"Temps E2E           : {e2e_time_ms:.2f} ms")
-    print(f"Temps send->get     : {device_time_ms:.2f} ms (USB+VPU+USB)")
+    print(f"Temps E2E moyen     : {timing['e2e_mean']:.2f} ms")
+    print(f"  Preprocess        : {timing['preprocess_ms']:.2f} ms")
+    print(f"  Inference (USB+VPU): {timing['inference_ms']:.2f} ms")
+    print(f"  Postprocess       : {timing['postprocess_ms']:.2f} ms")
+    print(
+        f"Latence p50/p90/p99 : {timing['latency_p50']:.2f} / {timing['latency_p90']:.2f} / {timing['latency_p99']:.2f} ms"
+    )
+    print(f"FPS                 : {timing['fps']:.1f}")
     print(f"mAP50               : {metrics['map50']:.4f}")
     print(f"Precision           : {metrics['precision']:.4f}")
     print(f"Recall              : {metrics['recall']:.4f}")
@@ -1183,14 +1323,23 @@ def benchmark_oak(model_path: str, num_classes: int, dataset: str = "coco128"):
         model_name=model_name,
         size_mb=size_mb,
         imgsz=imgsz,
-        e2e_time_ms=e2e_time_ms,
-        device_time_ms=device_time_ms,
+        e2e_time_ms=timing["e2e_mean"],
+        device_time_ms=timing["inference_ms"],
         map50=metrics["map50"],
         precision=metrics["precision"],
         recall=metrics["recall"],
         f1=metrics["f1"],
         dataset=dataset,
         backend="depthai",
+        # Extended timing (Phase 3)
+        latency_p50=timing["latency_p50"],
+        latency_p90=timing["latency_p90"],
+        latency_p95=timing["latency_p95"],
+        latency_p99=timing["latency_p99"],
+        preprocess_ms=timing["preprocess_ms"],
+        inference_ms=timing["inference_ms"],
+        postprocess_ms=timing["postprocess_ms"],
+        fps=timing["fps"],
     )
 
 
@@ -1330,7 +1479,9 @@ def _benchmark_orin_trt(
     all_predictions = []
     all_ground_truths = []
     e2e_times = []
-    device_times = []
+    preprocess_times = []
+    inference_times = []
+    postprocess_times = []
     first_frame = True
 
     for idx, sample in enumerate(dataset_items):
@@ -1388,7 +1539,9 @@ def _benchmark_orin_trt(
         t3 = time.perf_counter()
 
         e2e_times.append((t3 - t0) * 1000)
-        device_times.append((t2 - t1) * 1000)
+        preprocess_times.append((t1 - t0) * 1000)
+        inference_times.append((t2 - t1) * 1000)
+        postprocess_times.append((t3 - t2) * 1000)
 
         all_predictions.append(predictions)
 
@@ -1421,16 +1574,24 @@ def _benchmark_orin_trt(
         all_predictions, all_ground_truths, conf_op=CONF_OP, iou_thr=MATCH_IOU
     )
 
-    e2e_time_ms = float(np.mean(e2e_times)) if e2e_times else 0.0
-    device_time_ms = float(np.mean(device_times)) if device_times else 0.0
+    # Compute extended timing stats
+    timing = compute_timing_stats(
+        e2e_times, preprocess_times, inference_times, postprocess_times
+    )
 
     print("\n" + "-" * 40)
     print("RESULTATS ORIN (TensorRT API)")
     print("-" * 40)
     print(f"Taille engine       : {size_mb:.2f} MB")
     print(f"ImgSz               : {imgsz}")
-    print(f"Temps E2E           : {e2e_time_ms:.2f} ms")
-    print(f"Temps inference     : {device_time_ms:.2f} ms")
+    print(f"Temps E2E moyen     : {timing['e2e_mean']:.2f} ms")
+    print(f"  Preprocess        : {timing['preprocess_ms']:.2f} ms")
+    print(f"  Inference         : {timing['inference_ms']:.2f} ms")
+    print(f"  Postprocess       : {timing['postprocess_ms']:.2f} ms")
+    print(
+        f"Latence p50/p90/p99 : {timing['latency_p50']:.2f} / {timing['latency_p90']:.2f} / {timing['latency_p99']:.2f} ms"
+    )
+    print(f"FPS                 : {timing['fps']:.1f}")
     print(f"mAP50               : {metrics['map50']:.4f}")
     print(f"Precision           : {metrics['precision']:.4f}")
     print(f"Recall              : {metrics['recall']:.4f}")
@@ -1441,14 +1602,23 @@ def _benchmark_orin_trt(
         model_name=model_name,
         size_mb=size_mb,
         imgsz=imgsz,
-        e2e_time_ms=e2e_time_ms,
-        device_time_ms=device_time_ms,
+        e2e_time_ms=timing["e2e_mean"],
+        device_time_ms=timing["inference_ms"],
         map50=metrics["map50"],
         precision=metrics["precision"],
         recall=metrics["recall"],
         f1=metrics["f1"],
         dataset=dataset,
         backend="tensorrt",
+        # Extended timing (Phase 3)
+        latency_p50=timing["latency_p50"],
+        latency_p90=timing["latency_p90"],
+        latency_p95=timing["latency_p95"],
+        latency_p99=timing["latency_p99"],
+        preprocess_ms=timing["preprocess_ms"],
+        inference_ms=timing["inference_ms"],
+        postprocess_ms=timing["postprocess_ms"],
+        fps=timing["fps"],
     )
 
 
@@ -1492,7 +1662,9 @@ def _benchmark_orin_ultralytics(
     all_predictions = []
     all_ground_truths = []
     e2e_times = []
-    device_times = []
+    preprocess_times = []
+    inference_times = []
+    postprocess_times = []
 
     with torch.inference_mode():
         for idx, sample in enumerate(dataset_items):
@@ -1538,12 +1710,16 @@ def _benchmark_orin_ultralytics(
             t1 = time.perf_counter()
             e2e_times.append((t1 - t0) * 1000)
 
-            nn_ms = (
-                float(result.speed.get("inference", 0.0))
-                if hasattr(result, "speed") and isinstance(result.speed, dict)
-                else (t1 - t0) * 1000
-            )
-            device_times.append(nn_ms)
+            # Extract timing from Ultralytics result.speed if available
+            if hasattr(result, "speed") and isinstance(result.speed, dict):
+                preprocess_times.append(float(result.speed.get("preprocess", 0.0)))
+                inference_times.append(float(result.speed.get("inference", 0.0)))
+                postprocess_times.append(float(result.speed.get("postprocess", 0.0)))
+            else:
+                # Fallback: attribute all time to inference
+                preprocess_times.append(0.0)
+                inference_times.append((t1 - t0) * 1000)
+                postprocess_times.append(0.0)
 
             all_predictions.append(preds)
 
@@ -1576,16 +1752,24 @@ def _benchmark_orin_ultralytics(
         all_predictions, all_ground_truths, conf_op=CONF_OP, iou_thr=MATCH_IOU
     )
 
-    e2e_time_ms = float(np.mean(e2e_times)) if e2e_times else 0.0
-    device_time_ms = float(np.mean(device_times)) if device_times else 0.0
+    # Compute extended timing stats
+    timing = compute_timing_stats(
+        e2e_times, preprocess_times, inference_times, postprocess_times
+    )
 
     print("\n" + "-" * 40)
     print("RESULTATS ORIN (Ultralytics)")
     print("-" * 40)
     print(f"Taille engine       : {size_mb:.2f} MB")
     print(f"ImgSz               : {imgsz}")
-    print(f"Temps E2E           : {e2e_time_ms:.2f} ms")
-    print(f"Temps device        : {device_time_ms:.2f} ms")
+    print(f"Temps E2E moyen     : {timing['e2e_mean']:.2f} ms")
+    print(f"  Preprocess        : {timing['preprocess_ms']:.2f} ms")
+    print(f"  Inference         : {timing['inference_ms']:.2f} ms")
+    print(f"  Postprocess       : {timing['postprocess_ms']:.2f} ms")
+    print(
+        f"Latence p50/p90/p99 : {timing['latency_p50']:.2f} / {timing['latency_p90']:.2f} / {timing['latency_p99']:.2f} ms"
+    )
+    print(f"FPS                 : {timing['fps']:.1f}")
     print(f"mAP50               : {metrics['map50']:.4f}")
     print(f"Precision           : {metrics['precision']:.4f}")
     print(f"Recall              : {metrics['recall']:.4f}")
@@ -1596,14 +1780,23 @@ def _benchmark_orin_ultralytics(
         model_name=model_name,
         size_mb=size_mb,
         imgsz=imgsz,
-        e2e_time_ms=e2e_time_ms,
-        device_time_ms=device_time_ms,
+        e2e_time_ms=timing["e2e_mean"],
+        device_time_ms=timing["inference_ms"],
         map50=metrics["map50"],
         precision=metrics["precision"],
         recall=metrics["recall"],
         f1=metrics["f1"],
         dataset=dataset,
         backend="ultralytics",
+        # Extended timing (Phase 3)
+        latency_p50=timing["latency_p50"],
+        latency_p90=timing["latency_p90"],
+        latency_p95=timing["latency_p95"],
+        latency_p99=timing["latency_p99"],
+        preprocess_ms=timing["preprocess_ms"],
+        inference_ms=timing["inference_ms"],
+        postprocess_ms=timing["postprocess_ms"],
+        fps=timing["fps"],
     )
 
 
