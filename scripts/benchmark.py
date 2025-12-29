@@ -731,12 +731,24 @@ def benchmark_gpu_ort(
     model_path: str,
     num_classes: int,
     dataset: str = "coco128",
+    ort_opt_level: str | None = None,
 ):
     """
     Benchmark sur GPU via ONNX Runtime.
 
     Utilise le MEME postprocess que OAK (decode_yolo_output + apply_nms)
     pour garantir une comparaison "fair".
+
+    Args:
+        ort_opt_level: Niveau d'optimisation ORT au chargement.
+            - None (auto): DISABLE pour modeles _ortopt_*, sinon ALL
+            - "disable": ORT_DISABLE_ALL (pas d'optimisation)
+            - "basic": ORT_ENABLE_BASIC
+            - "extended": ORT_ENABLE_EXTENDED
+            - "all": ORT_ENABLE_ALL (defaut ORT)
+
+        Pour comparer les fusion levels offline, utiliser "disable"
+        pour eviter qu'ORT re-optimise et gomme les differences.
     """
     import onnxruntime as ort
 
@@ -752,15 +764,39 @@ def benchmark_gpu_ort(
     print(f"Taille: {size_mb:.2f} MB")
     print(f"ImgSz: {imgsz}")
 
+    # Configurer SessionOptions avec niveau d'optimisation
+    sess_options = ort.SessionOptions()
+
+    # Auto-detection: DISABLE pour modeles _ortopt_*, sinon defaut ORT
+    if ort_opt_level is None:
+        if "_ortopt_" in model_name:
+            ort_opt_level = "disable"
+            print("  [Auto] Modele _ortopt_* detecte -> ORT_DISABLE_ALL")
+        else:
+            ort_opt_level = "all"
+
+    opt_level_map = {
+        "disable": ort.GraphOptimizationLevel.ORT_DISABLE_ALL,
+        "basic": ort.GraphOptimizationLevel.ORT_ENABLE_BASIC,
+        "extended": ort.GraphOptimizationLevel.ORT_ENABLE_EXTENDED,
+        "all": ort.GraphOptimizationLevel.ORT_ENABLE_ALL,
+    }
+    sess_options.graph_optimization_level = opt_level_map[ort_opt_level]
+    print(f"ORT Opt Level: {ort_opt_level.upper()}")
+
     # Creer la session ONNX Runtime avec CUDA EP
     providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
     try:
-        session = ort.InferenceSession(model_path, providers=providers)
+        session = ort.InferenceSession(
+            model_path, sess_options=sess_options, providers=providers
+        )
         actual_provider = session.get_providers()[0]
         print(f"Provider: {actual_provider}")
     except Exception as e:
         print(f"  [Warning] CUDA non disponible, fallback CPU: {e}")
-        session = ort.InferenceSession(model_path, providers=["CPUExecutionProvider"])
+        session = ort.InferenceSession(
+            model_path, sess_options=sess_options, providers=["CPUExecutionProvider"]
+        )
         actual_provider = "CPUExecutionProvider"
 
     input_info = session.get_inputs()[0]
@@ -1458,6 +1494,12 @@ def _benchmark_orin_trt(
     # Buffer host pour output avec le bon dtype
     h_output = np.empty(output_shape, dtype=output_np_dtype)
 
+    # Creer le tableau bindings indexe correctement pour TensorRT
+    # TensorRT attend une liste de taille engine.num_bindings
+    bindings = [0] * engine.num_bindings
+    bindings[input_idx] = int(d_input)
+    bindings[output_idx] = int(d_output)
+
     # Warmup
     print(f"Warmup ({WARMUP_FRAMES} frames)...")
     for sample in dataset_items[:WARMUP_FRAMES]:
@@ -1472,7 +1514,7 @@ def _benchmark_orin_trt(
         )
 
         cuda.memcpy_htod_async(d_input, img_batch, stream)
-        context.execute_async_v2([int(d_input), int(d_output)], stream.handle)
+        context.execute_async_v2(bindings, stream.handle)
         stream.synchronize()
 
     print("\nInference...")
@@ -1504,7 +1546,7 @@ def _benchmark_orin_trt(
 
         # Inference TensorRT
         cuda.memcpy_htod_async(d_input, img_batch, stream)
-        context.execute_async_v2([int(d_input), int(d_output)], stream.handle)
+        context.execute_async_v2(bindings, stream.handle)
         cuda.memcpy_dtoh_async(h_output, d_output, stream)
         stream.synchronize()
 
@@ -1842,6 +1884,13 @@ def main():
         choices=["ort", "ultralytics"],
         help="Backend GPU: 'ort' (ONNX Runtime, meme postprocess que OAK) ou 'ultralytics'",
     )
+    parser.add_argument(
+        "--ort-opt-level",
+        type=str,
+        default=None,
+        choices=["disable", "basic", "extended", "all"],
+        help="Niveau d'optimisation ORT au chargement (defaut: auto-detect, DISABLE pour _ortopt_*)",
+    )
 
     args = parser.parse_args()
 
@@ -1868,7 +1917,12 @@ def main():
     # Benchmark
     if args.target == "4070":
         if args.backend == "ort" and ext == ".onnx":
-            benchmark_gpu_ort(model_path, args.num_classes, args.dataset)
+            benchmark_gpu_ort(
+                model_path,
+                args.num_classes,
+                args.dataset,
+                ort_opt_level=args.ort_opt_level,
+            )
         else:
             benchmark_gpu_ultralytics(model_path, args.num_classes, args.dataset)
     elif args.target == "oak":
