@@ -1,0 +1,14 @@
+{
+  "model": "yolo11n",
+  "scale": "n",
+  "imgsz": 256,
+  "quantization": "fp32",
+  "opset": 13,
+  "simplify": false,
+  "dynamic": false,
+  "size_mb": 10.07,
+  "ultralytics_version": "8.3.241",
+  "torch_version": "2.8.0+cu128",
+  "cuda_available": false,
+  "generated_at": "2025-12-29T14:12:49.235675"
+}

@@ -19,7 +19,10 @@ Usage:
 """
 
 import argparse
+import json
 import os
+import shutil
+from datetime import datetime
 from pathlib import Path
 
 # --- Configuration ---
@@ -30,6 +33,29 @@ DEFAULT_OUTPUT_DIR = ROOT_DIR / "models" / "variants"
 MODEL_SCALES = ["n", "s", "m"]
 RESOLUTIONS = [640, 512, 416, 320, 256]
 QUANTIZATIONS = ["fp32", "fp16"]
+OPSET_VERSION = 13
+
+
+def _check_cuda() -> bool:
+    """Verifie si CUDA est disponible (import torch lazy)."""
+    try:
+        import torch
+
+        return torch.cuda.is_available()
+    except ImportError:
+        return False
+
+
+# Cache pour CUDA disponible
+_cuda_available: bool | None = None
+
+
+def cuda_available() -> bool:
+    """Retourne True si CUDA est disponible (cache le resultat)."""
+    global _cuda_available
+    if _cuda_available is None:
+        _cuda_available = _check_cuda()
+    return _cuda_available
 
 
 def get_variant_name(scale: str, imgsz: int, quant: str) -> str:
@@ -37,10 +63,15 @@ def get_variant_name(scale: str, imgsz: int, quant: str) -> str:
     return f"yolo11{scale}_{imgsz}_{quant}.onnx"
 
 
-def download_base_model(scale: str) -> str:
+def download_base_model(scale: str):
     """
     Telecharge un modele YOLO11 de base depuis Ultralytics.
-    Retourne le chemin vers le fichier .pt.
+
+    Args:
+        scale: Echelle du modele (n, s, m)
+
+    Returns:
+        Objet YOLO charge
     """
     from ultralytics import YOLO
 
@@ -59,7 +90,7 @@ def export_variant(
     imgsz: int,
     quant: str,
     output_dir: Path,
-) -> str:
+) -> str | None:
     """
     Exporte une variante ONNX.
 
@@ -67,37 +98,76 @@ def export_variant(
         model: Modele YOLO charge
         scale: Echelle du modele (n, s, m)
         imgsz: Resolution d'entree
-        quant: Quantification (fp32, fp16, int8)
+        quant: Quantification (fp32, fp16)
         output_dir: Dossier de sortie
 
     Returns:
-        Chemin vers le fichier ONNX genere
+        Chemin vers le fichier ONNX genere, ou None si skip (ex: fp16 sans CUDA)
     """
+    import ultralytics
+
     variant_name = get_variant_name(scale, imgsz, quant)
     target_path = output_dir / variant_name
 
+    # Sanity check: imgsz doit etre multiple de 32
+    if imgsz % 32 != 0:
+        print(f"  [ERREUR] {variant_name} - imgsz={imgsz} n'est pas multiple de 32")
+        return None
+
+    # FP16 requiert CUDA pour l'export
+    half = quant == "fp16"
+    if half and not cuda_available():
+        print(f"  [SKIP] {variant_name} - FP16 requiert CUDA")
+        return None
+
     print(f"  Export: {variant_name}")
 
-    # Parametres de quantification
-    half = quant == "fp16"
-
-    # Export ONNX
+    # Export ONNX (GPU si disponible pour accelerer, CPU sinon)
+    device = 0 if cuda_available() else "cpu"
     onnx_path = model.export(
         format="onnx",
         imgsz=imgsz,
         half=half,
         simplify=False,  # Pas de fusion, sera fait au runtime par ORT
-        opset=13,
+        opset=OPSET_VERSION,
         dynamic=False,
+        device=device,
+        batch=1,  # Explicite pour determinisme
+        nms=False,  # NMS fait cote host, pas dans le modele
     )
 
-    # Deplacer vers le dossier de sortie avec le bon nom
+    # Deplacer vers le dossier de sortie avec le bon nom (shutil.move pour cross-device)
     onnx_path = Path(onnx_path)
     if onnx_path != target_path:
-        onnx_path.rename(target_path)
+        if target_path.exists():
+            target_path.unlink()
+        shutil.move(str(onnx_path), str(target_path))
 
     size_mb = os.path.getsize(target_path) / (1024 * 1024)
     print(f"    -> {target_path.name} ({size_mb:.2f} MB)")
+
+    # Sauvegarder metadata JSON
+    import torch
+
+    metadata = {
+        "model": f"yolo11{scale}",
+        "scale": scale,
+        "imgsz": imgsz,
+        "quantization": quant,
+        "opset": OPSET_VERSION,
+        "simplify": False,
+        "dynamic": False,
+        "batch": 1,
+        "nms": False,
+        "size_mb": round(size_mb, 2),
+        "ultralytics_version": ultralytics.__version__,
+        "torch_version": torch.__version__,
+        "cuda_available": cuda_available(),
+        "generated_at": datetime.now().isoformat(),
+    }
+    metadata_path = target_path.with_suffix(".json")
+    with open(metadata_path, "w") as f:
+        json.dump(metadata, f, indent=2)
 
     return str(target_path)
 
@@ -153,6 +223,7 @@ def generate_all_variants(
 
     generated = []
     skipped = 0
+    skipped_no_cuda = 0
     count = 0
 
     for scale in models:
@@ -169,8 +240,9 @@ def generate_all_variants(
                 variant_name = get_variant_name(scale, imgsz, quant)
                 target_path = output_dir / variant_name
 
-                # Skip si existe
-                if skip_existing and target_path.exists():
+                # Skip si onnx ET json existent
+                metadata_path = target_path.with_suffix(".json")
+                if skip_existing and target_path.exists() and metadata_path.exists():
                     print(f"  [{count}/{total}] {variant_name} - SKIP (existe)")
                     skipped += 1
                     continue
@@ -178,15 +250,19 @@ def generate_all_variants(
                 print(f"  [{count}/{total}] {variant_name}")
 
                 path = export_variant(model, scale, imgsz, quant, output_dir)
-                generated.append(path)
+                if path is None:
+                    skipped_no_cuda += 1
+                else:
+                    generated.append(path)
 
     # Resume
     print("\n" + "=" * 60)
     print("GENERATION TERMINEE")
     print("=" * 60)
-    print(f"Generes : {len(generated)}")
-    print(f"Ignores : {skipped}")
-    print(f"Dossier : {output_dir}")
+    print(f"Generes      : {len(generated)}")
+    print(f"Skip (existe): {skipped}")
+    print(f"Skip (CUDA)  : {skipped_no_cuda}")
+    print(f"Dossier      : {output_dir}")
 
     return generated
 
