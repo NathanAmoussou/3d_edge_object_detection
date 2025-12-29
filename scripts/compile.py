@@ -68,6 +68,24 @@ def is_ort_optimized_model(onnx_path: str) -> bool:
     return "_ortopt_" in Path(onnx_path).stem
 
 
+def has_qdq_nodes(onnx_path: str) -> bool:
+    """
+    Detecte si le modele ONNX contient des nodes QuantizeLinear/DequantizeLinear.
+
+    Si present, TensorRT doit etre invoque avec --int8 pour explicit quantization.
+    """
+    import onnx
+
+    model = onnx.load(onnx_path)
+    qdq_ops = {"QuantizeLinear", "DequantizeLinear"}
+
+    for node in model.graph.node:
+        if node.op_type in qdq_ops:
+            return True
+
+    return False
+
+
 def compile_for_gpu(onnx_path: str, output_dir: str) -> str:
     """
     "Compile" pour GPU/CPU = copie l'ONNX tel quel.
@@ -132,7 +150,15 @@ def compile_for_oak(onnx_path: str, output_dir: str) -> str:
             "Les modeles _ortopt_* ne sont pas supportes pour OAK.\n"
             "  Raison: ORT peut inserer des ops internes (com.ms.internal.*)\n"
             "          non supportes par OpenVINO/blobconverter.\n"
-            "  Solution: Utiliser le seed original ou le modele _int8_qdq."
+            "  Solution: Utiliser le seed FP16 original."
+        )
+
+    # Guard: refuser les modeles INT8 QDQ (MyriadX = FP16 only)
+    if "_int8_qdq" in onnx_path.stem:
+        raise ValueError(
+            "Les modeles _int8_qdq ne sont pas supportes pour OAK.\n"
+            "  Raison: RVC2/MyriadX supporte uniquement FP16 (INT8 = RVC3+).\n"
+            "  Solution: Utiliser le seed FP16 original."
         )
 
     # Verification supplementaire du contenu ONNX
@@ -249,8 +275,14 @@ def compile_for_orin(
     else:
         imgsz = 640
 
+    # Detecter si le modele contient des nodes QDQ (INT8 explicit quantization)
+    is_qdq_model = has_qdq_nodes(str(onnx_path))
+
     print(f"Input size: {imgsz}x{imgsz}")
-    print(f"Precision: {'FP16' if fp16 else 'FP32'}")
+    if is_qdq_model:
+        print("Precision: INT8 (QDQ detected)")
+    else:
+        print(f"Precision: {'FP16' if fp16 else 'FP32'}")
     print(f"Workspace: {workspace_mb} MB")
 
     # Nom du fichier engine et log
@@ -275,7 +307,12 @@ def compile_for_orin(
         f"--workspace={workspace_mb}",
     ]
 
-    if fp16:
+    # Si QDQ present, utiliser --int8 (explicit quantization)
+    # Ajouter aussi --fp16 pour fallback sur les layers non-quantifies
+    if is_qdq_model:
+        cmd.append("--int8")
+        cmd.append("--fp16")  # Fallback FP16 pour layers non-INT8
+    elif fp16:
         cmd.append("--fp16")
 
     # Pas de NMS integre (on veut le meme postprocess que GPU/OAK)

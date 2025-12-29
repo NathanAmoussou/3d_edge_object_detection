@@ -357,7 +357,7 @@ def apply_int8_quantization(
     calib_dataset: str = "coco128",
     calib_size: int = 100,
     per_channel: bool = True,
-) -> tuple[str, list[str]]:
+) -> tuple[str, list[str], str]:
     """
     Applique INT8 Post-Training Quantization via format QDQ.
 
@@ -369,7 +369,7 @@ def apply_int8_quantization(
         per_channel: Utiliser quantification per-channel (plus precis)
 
     Returns:
-        Tuple (chemin vers ONNX quantifie, liste des images de calibration)
+        Tuple (chemin ONNX quantifie, chemins relatifs calibration, racine dataset)
 
     Notes:
         - Format QDQ est le plus portable pour INT8
