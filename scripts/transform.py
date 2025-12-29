@@ -171,6 +171,7 @@ def save_transform_metadata(
     calib_dataset: str | None = None,
     calib_size: int | None = None,
     calib_images: list[str] | None = None,
+    calib_dataset_root: str | None = None,
 ) -> None:
     """
     Sauvegarde le metadata JSON etendu pour le modele transforme.
@@ -196,13 +197,15 @@ def save_transform_metadata(
     metadata["int8_calibration"] = is_int8
     metadata["calib_dataset"] = calib_dataset if is_int8 else None
     metadata["calib_size"] = calib_size if is_int8 else None
+    metadata["calib_dataset_root"] = calib_dataset_root if is_int8 else None
 
-    # Hash des images de calibration pour reproductibilite
+    # Hash et liste des images de calibration (chemins relatifs) pour reproductibilite
     if is_int8 and calib_images:
         images_str = "|".join(sorted(calib_images))
         metadata["calib_images_hash"] = hashlib.sha256(images_str.encode()).hexdigest()[
             :16
         ]
+        # Stocker les chemins relatifs (ex: images/train2017/000000000009.jpg)
         metadata["calib_images_list"] = sorted(calib_images)
     else:
         metadata["calib_images_hash"] = None
@@ -318,24 +321,34 @@ def letterbox(img, new_shape=(640, 640), color=(114, 114, 114)):
 def get_calibration_images(
     dataset_name: str,
     num_samples: int,
-) -> list[str]:
+) -> tuple[list[str], str, str]:
     """
     Recupere la liste des images de calibration.
 
     Returns:
-        Liste des chemins d'images (tries pour reproductibilite)
+        Tuple (chemins absolus, chemins relatifs, racine dataset)
     """
     from ultralytics.data.utils import check_det_dataset
 
     if dataset_name == "coco":
         data = check_det_dataset("coco.yaml")
-        images_dir = Path(data["path"]) / "images" / "val2017"
+        dataset_root = Path(data["path"])
+        rel_images_dir = "images/val2017"
     else:  # coco128
         data = check_det_dataset("coco128.yaml")
-        images_dir = Path(data["path"]) / "images" / "train2017"
+        dataset_root = Path(data["path"])
+        rel_images_dir = "images/train2017"
 
+    images_dir = dataset_root / rel_images_dir
     image_files = sorted(images_dir.glob("*.jpg"))[:num_samples]
-    return [str(p) for p in image_files]
+
+    # Chemins absolus pour la calibration
+    abs_paths = [str(p) for p in image_files]
+
+    # Chemins relatifs pour la reproductibilite
+    rel_paths = [f"{rel_images_dir}/{p.name}" for p in image_files]
+
+    return abs_paths, rel_paths, str(dataset_root)
 
 
 def apply_int8_quantization(
@@ -379,14 +392,30 @@ def apply_int8_quantization(
     imgsz = parse_imgsz_from_filename(onnx_path)
 
     # Recuperer les images de calibration
-    calib_images = get_calibration_images(calib_dataset, calib_size)
-    print(f"    Images trouvees: {len(calib_images)}")
+    calib_abs_paths, calib_rel_paths, dataset_root = get_calibration_images(
+        calib_dataset, calib_size
+    )
+    print(f"    Images trouvees: {len(calib_abs_paths)}")
+    print(f"    Dataset root: {dataset_root}")
 
-    # Obtenir le nom de l'input depuis le modele
+    # Obtenir le nom de l'input et verifier l'opset
     model = onnx.load(onnx_path)
     input_name = model.graph.input[0].name
 
-    # Creer le CalibrationDataReader
+    # Verifier opset >= 13 pour per-channel quantization
+    opset_version = 0
+    for opset in model.opset_import:
+        if opset.domain == "" or opset.domain == "ai.onnx":
+            opset_version = opset.version
+            break
+
+    if per_channel and opset_version < 13:
+        print(f"    [Warning] Opset {opset_version} < 13, per-channel desactive")
+        per_channel = False
+
+    print(f"    Per-channel: {per_channel} (opset {opset_version})")
+
+    # Creer le CalibrationDataReader (utilise les chemins absolus)
     class COCOCalibrationReader(CalibrationDataReader):
         def __init__(self, image_files: list[str], imgsz: int, input_name: str):
             self.image_files = image_files
@@ -417,7 +446,7 @@ def apply_int8_quantization(
         def rewind(self):
             self.index = 0
 
-    calib_reader = COCOCalibrationReader(calib_images, imgsz, input_name)
+    calib_reader = COCOCalibrationReader(calib_abs_paths, imgsz, input_name)
 
     # Chemin de sortie
     output_name = get_transformed_name(onnx_path, is_int8=True)
@@ -444,8 +473,8 @@ def apply_int8_quantization(
     size_mb = os.path.getsize(output_path) / (1024 * 1024)
     print(f"    -> {output_path.name} ({size_mb:.2f} MB)")
 
-    # Retourner la liste des images pour le metadata
-    return str(output_path), [Path(p).name for p in calib_images]
+    # Retourner les chemins relatifs et la racine pour le metadata
+    return str(output_path), calib_rel_paths, dataset_root
 
 
 # =============================================================================
@@ -506,6 +535,7 @@ def transform_model(
     source_metadata = load_source_metadata(onnx_path)
 
     calib_images = None
+    calib_dataset_root = None
     current_onnx = onnx_path
 
     # Etape 1: Fusion ORT (si demandee)
@@ -518,7 +548,7 @@ def transform_model(
 
     # Etape 2: INT8 QDQ (si demandee)
     if int8:
-        result, calib_images = apply_int8_quantization(
+        result, calib_images, calib_dataset_root = apply_int8_quantization(
             current_onnx, output_dir, calib_dataset, calib_size
         )
         current_onnx = result
@@ -543,6 +573,7 @@ def transform_model(
             calib_dataset=calib_dataset if int8 else None,
             calib_size=calib_size if int8 else None,
             calib_images=calib_images,
+            calib_dataset_root=calib_dataset_root,
         )
 
     return current_onnx
@@ -702,6 +733,10 @@ Exemples:
     )
 
     args = parser.parse_args()
+
+    # Traiter --fusion disable comme "pas de fusion"
+    if args.fusion == "disable":
+        args.fusion = None
 
     # Valider: au moins une transformation
     if not args.fusion and not args.int8:

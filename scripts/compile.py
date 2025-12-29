@@ -23,6 +23,50 @@ from pathlib import Path
 # --- Configuration ---
 ROOT_DIR = Path(__file__).parent.parent.resolve()
 
+# Domaines ONNX internes a ORT (non portables vers TRT/OpenVINO)
+ORT_INTERNAL_DOMAINS = [
+    "com.ms.internal",
+    "com.microsoft",
+    "ai.onnx.contrib",
+]
+
+
+def check_onnx_portability(onnx_path: str) -> tuple[bool, list[str]]:
+    """
+    Verifie si un ONNX contient des ops/domaines internes ORT.
+
+    Les modeles generes par ORT optimized_model_filepath peuvent contenir
+    des ops internes (com.ms.internal.nhwc, etc.) non portables.
+
+    Returns:
+        (is_portable, list of problematic domains found)
+    """
+    import onnx
+
+    model = onnx.load(onnx_path)
+    found_domains = set()
+
+    # Verifier les opset imports
+    for opset in model.opset_import:
+        domain = opset.domain or "ai.onnx"
+        for internal in ORT_INTERNAL_DOMAINS:
+            if domain.startswith(internal):
+                found_domains.add(domain)
+
+    # Verifier les ops dans le graphe
+    for node in model.graph.node:
+        domain = node.domain or "ai.onnx"
+        for internal in ORT_INTERNAL_DOMAINS:
+            if domain.startswith(internal):
+                found_domains.add(domain)
+
+    return len(found_domains) == 0, list(found_domains)
+
+
+def is_ort_optimized_model(onnx_path: str) -> bool:
+    """Detecte si le modele est un ONNX optimise par ORT (via nom de fichier)."""
+    return "_ortopt_" in Path(onnx_path).stem
+
 
 def compile_for_gpu(onnx_path: str, output_dir: str) -> str:
     """
@@ -65,6 +109,9 @@ def compile_for_oak(onnx_path: str, output_dir: str) -> str:
     """
     Compile ONNX -> BLOB pour OAK-D (Myriad X VPU).
     Utilise blobconverter avec les memes parametres que le preprocess OAK.
+
+    IMPORTANT: Les modeles _ortopt_* ne sont PAS supportes car ils peuvent
+    contenir des ops internes ORT non portables vers OpenVINO.
     """
     import blobconverter
 
@@ -78,6 +125,23 @@ def compile_for_oak(onnx_path: str, output_dir: str) -> str:
     # Verifier que c'est bien un ONNX
     if onnx_path.suffix.lower() != ".onnx":
         raise ValueError(f"Attendu un fichier .onnx, recu: {onnx_path.suffix}")
+
+    # Guard: refuser les modeles ORT-optimized (non portables)
+    if is_ort_optimized_model(str(onnx_path)):
+        raise ValueError(
+            "Les modeles _ortopt_* ne sont pas supportes pour OAK.\n"
+            "  Raison: ORT peut inserer des ops internes (com.ms.internal.*)\n"
+            "          non supportes par OpenVINO/blobconverter.\n"
+            "  Solution: Utiliser le seed original ou le modele _int8_qdq."
+        )
+
+    # Verification supplementaire du contenu ONNX
+    is_portable, bad_domains = check_onnx_portability(str(onnx_path))
+    if not is_portable:
+        raise ValueError(
+            f"ONNX contient des domaines non portables: {bad_domains}\n"
+            f"  Ce modele ne peut pas etre compile pour OAK/OpenVINO."
+        )
 
     # Extraire imgsz du nom de fichier (ex: yolo11n_640_fp16.onnx -> 640)
     # Format attendu: yolo11{scale}_{imgsz}_{quant}.onnx
@@ -137,6 +201,9 @@ def compile_for_orin(
     IMPORTANT: Cette fonction doit etre executee SUR LE JETSON.
     TensorRT compile pour l'architecture GPU locale.
 
+    IMPORTANT: Les modeles _ortopt_* ne sont PAS supportes car ils peuvent
+    contenir des ops internes ORT non portables vers TensorRT.
+
     Args:
         onnx_path: Chemin vers le fichier ONNX
         output_dir: Dossier de sortie
@@ -154,6 +221,23 @@ def compile_for_orin(
     # Verifier que c'est bien un ONNX
     if onnx_path.suffix.lower() != ".onnx":
         raise ValueError(f"Attendu un fichier .onnx, recu: {onnx_path.suffix}")
+
+    # Guard: refuser les modeles ORT-optimized (non portables)
+    if is_ort_optimized_model(str(onnx_path)):
+        raise ValueError(
+            "Les modeles _ortopt_* ne sont pas supportes pour TensorRT.\n"
+            "  Raison: ORT peut inserer des ops internes (com.ms.internal.*)\n"
+            "          non supportes par TensorRT.\n"
+            "  Solution: Utiliser le seed original ou le modele _int8_qdq."
+        )
+
+    # Verification supplementaire du contenu ONNX
+    is_portable, bad_domains = check_onnx_portability(str(onnx_path))
+    if not is_portable:
+        raise ValueError(
+            f"ONNX contient des domaines non portables: {bad_domains}\n"
+            f"  Ce modele ne peut pas etre compile pour TensorRT."
+        )
 
     # Extraire imgsz du nom de fichier
     parts = onnx_path.stem.split("_")
