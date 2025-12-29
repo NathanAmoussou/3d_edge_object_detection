@@ -147,6 +147,8 @@ import argparse
 import csv
 import os
 import time
+import torch
+from ultralytics import YOLO
 from datetime import datetime
 from pathlib import Path
 
@@ -578,129 +580,147 @@ def benchmark_gpu(
     # Charger le modele
     model = YOLO(model_path)
     print(f"Classes: {len(model.names)}")
+    print("\nValidation sur COCO128...")
+    metrics = model.val(
+        data="coco128.yaml",
+        imgsz=IMGSZ,
+        device=0,  # GPU
+        verbose=False,
+        batch=12,
+	workers=16,
+	half=True
+    )
 
     print(f"\nInference sur {dataset.upper()} (GPU)...")
     dataset_items = load_coco128_dataset(dataset)
 
     # Warmup (exclure des stats)
     print(f"Warmup ({WARMUP_FRAMES} frames)...")
-    for sample in dataset_items[:WARMUP_FRAMES]:
-        img = cv2.imread(sample["image_path"])
-        if img is None:
-            continue
-        img_lb, _, _ = letterbox(img, (IMGSZ, IMGSZ))
-        _ = model.predict(img_lb, imgsz=IMGSZ, conf=CONF_EVAL, device=0, verbose=False)
+    with torch.inference_mode():
+        for sample in dataset_items[:WARMUP_FRAMES]:
+            img = cv2.imread(sample["image_path"])
+            if img is None:
+                continue
+            img_lb, _, _ = letterbox(img, (IMGSZ, IMGSZ))
+            # On passe l'image
+            _ = model.predict(img_lb, imgsz=IMGSZ, conf=CONF_EVAL, device=0, verbose=False, half=True)
+
 
     all_predictions = []
     all_ground_truths = []
     e2e_times = []
     device_times = []
+    with torch.inference_mode():
+        for idx, sample in enumerate(dataset_items):
+            img = cv2.imread(sample["image_path"])
+            if img is None:
+                continue
 
-    for idx, sample in enumerate(dataset_items):
-        img = cv2.imread(sample["image_path"])
-        if img is None:
-            continue
+            orig_h, orig_w = img.shape[:2]
 
-        orig_h, orig_w = img.shape[:2]
+            t0 = time.perf_counter()
 
-        t0 = time.perf_counter()
+            if pixel_perfect:
+                # Appliquer le meme letterbox que OAK pour equite pixel-perfect
+                img_lb, ratio, (dw, dh) = letterbox(img, (IMGSZ, IMGSZ))
+                
+                # Note: ajout de half=True pour performance sur Tensor Cores (Orin/RTX)
+                result = model.predict(
+                    img_lb,
+                    imgsz=IMGSZ,
+                    conf=CONF_EVAL,
+                    iou=NMS_IOU,
+                    max_det=MAX_DET,
+                    device=0,
+                    verbose=False,
+                    half=True 
+                )[0]
 
-        if pixel_perfect:
-            # Appliquer le même letterbox que OAK pour équité pixel-perfect
-            img_lb, ratio, (dw, dh) = letterbox(img, (IMGSZ, IMGSZ))
-            result = model.predict(
-                img_lb,
-                imgsz=IMGSZ,
-                conf=CONF_EVAL,
-                iou=NMS_IOU,
-                max_det=MAX_DET,
-                device=0,
-                verbose=False,
-            )[0]
+                preds = []
+                for b in result.boxes:
+                    x1, y1, x2, y2 = b.xyxy[0].tolist()
+                    # Reverse letterbox (meme logique que OAK)
+                    x1 = (x1 - dw) / ratio[0]
+                    y1 = (y1 - dh) / ratio[1]
+                    x2 = (x2 - dw) / ratio[0]
+                    y2 = (y2 - dh) / ratio[1]
+                    # Normalisation et clamping
+                    preds.append(
+                        {
+                            "box": [
+                                max(0, min(1, x1 / orig_w)),
+                                max(0, min(1, y1 / orig_h)),
+                                max(0, min(1, x2 / orig_w)),
+                                max(0, min(1, y2 / orig_h)),
+                            ],
+                            "class_id": int(b.cls.item()),
+                            "confidence": float(b.conf.item()),
+                        }
+                    )
+            else:
+                # Mode original: Ultralytics gere le preprocessing
+                result = model.predict(
+                    img,
+                    imgsz=IMGSZ,
+                    conf=CONF_EVAL,
+                    iou=NMS_IOU,
+                    max_det=MAX_DET,
+                    device=0,
+                    verbose=False,
+                    half=True
+                )[0]
 
-            preds = []
-            for b in result.boxes:
-                x1, y1, x2, y2 = b.xyxy[0].tolist()
-                # Reverse letterbox (même logique que OAK)
-                x1 = (x1 - dw) / ratio[0]
-                y1 = (y1 - dh) / ratio[1]
-                x2 = (x2 - dw) / ratio[0]
-                y2 = (y2 - dh) / ratio[1]
-                # Normalisation et clamping
-                preds.append(
+                preds = []
+                for b in result.boxes:
+                    x1, y1, x2, y2 = b.xyxy[0].tolist()
+                    preds.append(
+                        {
+                            "box": [
+                                x1 / orig_w,
+                                y1 / orig_h,
+                                x2 / orig_w,
+                                y2 / orig_h,
+                            ],
+                            "class_id": int(b.cls.item()),
+                            "confidence": float(b.conf.item()),
+                        }
+                    )
+
+            t1 = time.perf_counter()
+            e2e_times.append((t1 - t0) * 1000)
+
+            nn_ms = (
+                float(result.speed.get("inference", 0.0))
+                if hasattr(result, "speed") and isinstance(result.speed, dict)
+                else 0.0
+            )
+            if nn_ms <= 0.0:
+                nn_ms = (t1 - t0) * 1000
+            device_times.append(nn_ms)
+
+            all_predictions.append(preds)
+
+            gt_list = []
+            for gt in sample["gt_boxes"]:
+                x_center, y_center, w, h = (
+                    gt["x_center"],
+                    gt["y_center"],
+                    gt["width"],
+                    gt["height"],
+                )
+                gt_list.append(
                     {
                         "box": [
-                            max(0, min(1, x1 / orig_w)),
-                            max(0, min(1, y1 / orig_h)),
-                            max(0, min(1, x2 / orig_w)),
-                            max(0, min(1, y2 / orig_h)),
+                            x_center - w / 2,
+                            y_center - h / 2,
+                            x_center + w / 2,
+                            y_center + h / 2,
                         ],
-                        "class_id": int(b.cls.item()),
-                        "confidence": float(b.conf.item()),
+                        "class_id": gt["class_id"],
                     }
                 )
-        else:
-            # Mode original: Ultralytics gère le preprocessing
-            result = model.predict(
-                img,
-                imgsz=IMGSZ,
-                conf=CONF_EVAL,
-                iou=NMS_IOU,
-                max_det=MAX_DET,
-                device=0,
-                verbose=False,
-            )[0]
+            all_ground_truths.append(gt_list)
 
-            preds = []
-            for b in result.boxes:
-                x1, y1, x2, y2 = b.xyxy[0].tolist()
-                preds.append(
-                    {
-                        "box": [
-                            x1 / orig_w,
-                            y1 / orig_h,
-                            x2 / orig_w,
-                            y2 / orig_h,
-                        ],
-                        "class_id": int(b.cls.item()),
-                        "confidence": float(b.conf.item()),
-                    }
-                )
-
-        t1 = time.perf_counter()
-        e2e_times.append((t1 - t0) * 1000)
-
-        nn_ms = (
-            float(result.speed.get("inference", 0.0))
-            if hasattr(result, "speed") and isinstance(result.speed, dict)
-            else 0.0
-        )
-        if nn_ms <= 0.0:
-            nn_ms = (t1 - t0) * 1000
-        device_times.append(nn_ms)
-
-        all_predictions.append(preds)
-
-        gt_list = []
-        for gt in sample["gt_boxes"]:
-            x_center, y_center, w, h = (
-                gt["x_center"],
-                gt["y_center"],
-                gt["width"],
-                gt["height"],
-            )
-            gt_list.append(
-                {
-                    "box": [
-                        x_center - w / 2,
-                        y_center - h / 2,
-                        x_center + w / 2,
-                        y_center + h / 2,
-                    ],
-                    "class_id": gt["class_id"],
-                }
-            )
-        all_ground_truths.append(gt_list)
 
     metrics = compute_map50_prf1(
         all_predictions, all_ground_truths, conf_op=CONF_OP, iou_thr=MATCH_IOU
@@ -1138,7 +1158,77 @@ def benchmark_oak(model_path: str, num_classes: int, dataset: str = "coco128"):
         pixel_perfect=True,  # OAK utilise toujours le même letterbox
     )
 
+def benchmark_orin(model_path, num_classes=1):
 
+    import os
+    from ultralytics.utils.benchmarks import ProfileModels
+    
+    print(f"Chargement du moteur TensorRT : {model_path}")
+    model = YOLO(model_path, task='detect')
+
+    try:
+        if model.metadata is None or not model.metadata.get('names'):
+            print(" > [FIX] Injection des metadonnees manquantes...")
+            model.metadata = {
+                'names': {i: f'class_{i}' for i in range(num_classes)},
+                'batch': 1,
+                'stride': 32,
+                'imgsz': [640, 640],
+                'task': 'detect',
+                'args': {} 
+            }
+    except Exception as e:
+        print(f"Warning: Probleme injection metadonnees: {e}")
+
+    print(" > Lancement du benchmark officiel sur COCO128...")
+    print("    (Cela peut prendre quelques secondes pour charger le dataset)")
+    
+    try:
+        metrics = model.val(
+            data="coco128.yaml",
+            batch=1,          
+            imgsz=640,        
+            plots=False,      
+            device=0,         
+            half=True,        
+            verbose=False
+        )
+
+        speed = metrics.speed
+        inference_time_ms = speed['inference']
+        total_latency_ms = speed['inference'] + speed['preprocess'] + speed['postprocess']
+        fps = 1000 / inference_time_ms
+
+        print("\n" + "="*50)
+        print(f" RESULTATS JETSON ORIN (COCO128)")
+        print("="*50)
+        print(f" Inference pure : {inference_time_ms:.2f} ms ({fps:.2f} FPS)")
+        print(f" Latence totale : {total_latency_ms:.2f} ms (Pre+Inf+Post)")
+        print(f" mAP50          : {metrics.box.map50:.4f}")
+        print("="*50)
+
+        # --- SAUVEGARDE CSV ---
+        size_mb = os.path.getsize(model_path) / (1024 * 1024)
+        save_results(
+            hardware="Jetson Orin Nano (TensorRT)",
+            model_name=Path(model_path).name,
+            size_mb=size_mb,
+            input_size=640,
+            precision=metrics.box.mp,  
+            recall=metrics.box.mr,     
+            map50=metrics.box.map50,   
+            fps=fps,
+            latency=inference_time_ms
+        )
+        print(f" > Resultats sauvegardes dans benchmark_results.csv")
+
+    except Exception as e:
+        print("\n") 
+        print(f"ERREUR FATALE SUR MODEL.VAL : {e}")
+        print("") 
+        print("Conseil : Si l'erreur persiste, c'est que le moteur TensorRT brut ne renvoie pas")
+        print("les donnees au format attendu par le validateur COCO.")
+        print("Utilisez la version precedente (dummy input) pour avoir au moins les FPS.")
 # =============================================================================
 # MAIN
 # =============================================================================
@@ -1152,8 +1242,8 @@ def main():
         "--target",
         type=str,
         required=True,
-        choices=["4070", "oak"],
-        help="Cible hardware: '4070' pour GPU (ONNX), 'oak' pour OAK-D (blob)",
+        choices=["4070", "oak", "orin"],
+        help="Cible hardware: '4070' pour GPU (ONNX), 'oak' pour OAK-D (blob)"
     )
     parser.add_argument(
         "--model",
@@ -1203,7 +1293,7 @@ def main():
 
     # Verifier l'extension
     ext = Path(model_path).suffix.lower()
-    if args.target == "4070" and ext not in [".pt", ".onnx"]:
+    if args.target == "4070" and ext not in [".pt", ".onnx", ".engine"]:
         print(f"Attention: Pour GPU, un fichier .pt ou .onnx est attendu (recu: {ext})")
     elif args.target == "oak" and ext != ".blob":
         print(f"Attention: Pour OAK, un fichier .blob est attendu (recu: {ext})")
@@ -1218,7 +1308,8 @@ def main():
         )
     elif args.target == "oak":
         benchmark_oak(model_path, args.num_classes, dataset=args.dataset)
-
+    elif args.target == "orin":
+       	benchmark_orin(model_path, args.num_classes)
     return 0
 
 

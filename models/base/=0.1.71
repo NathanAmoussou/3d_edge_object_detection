@@ -1,0 +1,6 @@
+Defaulting to user installation because normal site-packages is not writeable
+Collecting onnxslim
+  Downloading onnxslim-0.1.80-py3-none-any.whl.metadata (10 kB)
+Downloading onnxslim-0.1.80-py3-none-any.whl (167 kB)
+Installing collected packages: onnxslim
+Successfully installed onnxslim-0.1.80
