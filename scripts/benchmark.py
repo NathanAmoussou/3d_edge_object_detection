@@ -10,6 +10,8 @@ import argparse
 import csv
 import os
 import time
+import torch
+from ultralytics import YOLO
 from datetime import datetime
 from pathlib import Path
 
@@ -221,7 +223,14 @@ def benchmark_gpu(model_path: str, num_classes: int):
     # Charger le modele
     model = YOLO(model_path)
     print(f"Classes: {len(model.names)}")
-
+    #if model.metadata is None:
+    #print("Warning: Métadonnées absentes (trtexec), injection de valeurs par défaut...")
+#    model.metadata = {
+ #       'names': {i: f'class_{i}' for i in range(num_classes)},
+  #      'batch': 1,
+   #     'stride': 32,
+    #    'imgsz': [640, 640]  # Adapte si ton modèle n'est pas en 640
+    #}
     # Validation sur COCO128
     print("\nValidation sur COCO128...")
     metrics = model.val(
@@ -229,6 +238,9 @@ def benchmark_gpu(model_path: str, num_classes: int):
         imgsz=IMGSZ,
         device=0,  # GPU
         verbose=False,
+        batch=12,
+	workers=16,
+	half=True
     )
 
     # Extraire les metriques
@@ -455,7 +467,77 @@ def benchmark_oak(model_path: str, num_classes: int):
         f1=f1,
     )
 
+def benchmark_orin(model_path, num_classes=1):
 
+    import os
+    from ultralytics.utils.benchmarks import ProfileModels
+    
+    print(f"Chargement du moteur TensorRT : {model_path}")
+    model = YOLO(model_path, task='detect')
+
+    try:
+        if model.metadata is None or not model.metadata.get('names'):
+            print(" > [FIX] Injection des metadonnees manquantes...")
+            model.metadata = {
+                'names': {i: f'class_{i}' for i in range(num_classes)},
+                'batch': 1,
+                'stride': 32,
+                'imgsz': [640, 640],
+                'task': 'detect',
+                'args': {} 
+            }
+    except Exception as e:
+        print(f"Warning: Probleme injection metadonnees: {e}")
+
+    print(" > Lancement du benchmark officiel sur COCO128...")
+    print("    (Cela peut prendre quelques secondes pour charger le dataset)")
+    
+    try:
+        metrics = model.val(
+            data="coco128.yaml",
+            batch=1,          
+            imgsz=640,        
+            plots=False,      
+            device=0,         
+            half=True,        
+            verbose=False
+        )
+
+        speed = metrics.speed
+        inference_time_ms = speed['inference']
+        total_latency_ms = speed['inference'] + speed['preprocess'] + speed['postprocess']
+        fps = 1000 / inference_time_ms
+
+        print("\n" + "="*50)
+        print(f" RESULTATS JETSON ORIN (COCO128)")
+        print("="*50)
+        print(f" Inference pure : {inference_time_ms:.2f} ms ({fps:.2f} FPS)")
+        print(f" Latence totale : {total_latency_ms:.2f} ms (Pre+Inf+Post)")
+        print(f" mAP50          : {metrics.box.map50:.4f}")
+        print("="*50)
+
+        # --- SAUVEGARDE CSV ---
+        size_mb = os.path.getsize(model_path) / (1024 * 1024)
+        save_results(
+            hardware="Jetson Orin Nano (TensorRT)",
+            model_name=Path(model_path).name,
+            size_mb=size_mb,
+            input_size=640,
+            precision=metrics.box.mp,  
+            recall=metrics.box.mr,     
+            map50=metrics.box.map50,   
+            fps=fps,
+            latency=inference_time_ms
+        )
+        print(f" > Resultats sauvegardes dans benchmark_results.csv")
+
+    except Exception as e:
+        print("\n") 
+        print(f"ERREUR FATALE SUR MODEL.VAL : {e}")
+        print("") 
+        print("Conseil : Si l'erreur persiste, c'est que le moteur TensorRT brut ne renvoie pas")
+        print("les donnees au format attendu par le validateur COCO.")
+        print("Utilisez la version precedente (dummy input) pour avoir au moins les FPS.")
 # =============================================================================
 # MAIN
 # =============================================================================
@@ -468,7 +550,7 @@ def main():
         "--target",
         type=str,
         required=True,
-        choices=["4070", "oak"],
+        choices=["4070", "oak", "orin"],
         help="Cible hardware: '4070' pour GPU (ONNX), 'oak' pour OAK-D (blob)"
     )
     parser.add_argument(
@@ -499,7 +581,7 @@ def main():
 
     # Verifier l'extension
     ext = Path(model_path).suffix.lower()
-    if args.target == "4070" and ext not in [".pt", ".onnx"]:
+    if args.target == "4070" and ext not in [".pt", ".onnx", ".engine"]:
         print(f"Attention: Pour GPU, un fichier .pt ou .onnx est attendu (recu: {ext})")
     elif args.target == "oak" and ext != ".blob":
         print(f"Attention: Pour OAK, un fichier .blob est attendu (recu: {ext})")
@@ -509,7 +591,8 @@ def main():
         benchmark_gpu(model_path, args.num_classes)
     elif args.target == "oak":
         benchmark_oak(model_path, args.num_classes)
-
+    elif args.target == "orin":
+       	benchmark_orin(model_path, args.num_classes)
     return 0
 
 
