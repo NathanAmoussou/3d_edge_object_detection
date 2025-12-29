@@ -9,22 +9,23 @@ Ce script produit des ONNX derives qui peuvent ensuite etre compiles
 par compile.py pour des cibles hardware specifiques.
 
 Usage:
-    # Fusion ORT
+    # Fusion ORT (pour bench ORT uniquement, non portable vers TRT/OAK)
     python transform.py --model models/variants/yolo11n_640_fp16.onnx --fusion all
     python transform.py --model models/variants/yolo11n_640_fp16.onnx --fusion basic --runtime-only
 
-    # INT8 QDQ (depuis FP32 recommande)
+    # INT8 QDQ (portable vers TRT avec --int8, depuis FP32 recommande)
     python transform.py --model models/variants/yolo11n_640_fp32.onnx --int8
     python transform.py --model models/variants/yolo11n_640_fp32.onnx --int8 --calib-size 200
-
-    # Combine (fusion puis INT8)
-    python transform.py --model models/variants/yolo11n_640_fp32.onnx --fusion basic --int8
 
     # Batch via pattern
     python transform.py --pattern "yolo11n_*_fp16.onnx" --fusion all
 
     # Dry-run
     python transform.py --model models/variants/yolo11n_640_fp16.onnx --fusion all --dry-run
+
+NOTE: La combinaison --fusion + --int8 n'est PAS supportee.
+      Les ONNX optimises par ORT contiennent des domaines internes non portables.
+      Utiliser --fusion pour bench ORT, ou --int8 pour compilation TRT.
 """
 
 import argparse
@@ -321,7 +322,7 @@ def letterbox(img, new_shape=(640, 640), color=(114, 114, 114)):
 def get_calibration_images(
     dataset_name: str,
     num_samples: int,
-) -> tuple[list[str], str, str]:
+) -> tuple[list[str], list[str], str]:
     """
     Recupere la liste des images de calibration.
 
@@ -547,20 +548,12 @@ def transform_model(
             current_onnx = result
 
     # Etape 2: INT8 QDQ (si demandee)
+    # Note: fusion_level et int8 sont mutuellement exclusifs (valide par CLI)
     if int8:
         result, calib_images, calib_dataset_root = apply_int8_quantization(
             current_onnx, output_dir, calib_dataset, calib_size
         )
         current_onnx = result
-
-        # Si on a fait fusion + int8, supprimer l'intermediaire fusion-only
-        if fusion_level:
-            intermediate = Path(output_dir) / get_transformed_name(
-                onnx_path, fusion_level, False
-            )
-            if intermediate.exists() and intermediate != Path(current_onnx):
-                intermediate.unlink()
-                intermediate.with_suffix(".json").unlink(missing_ok=True)
 
     # Sauvegarder metadata
     if current_onnx and Path(current_onnx).exists():
@@ -648,17 +641,16 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Exemples:
-  # Fusion ORT
+  # Fusion ORT (bench ORT uniquement, non portable TRT/OAK)
   python transform.py --model models/variants/yolo11n_640_fp16.onnx --fusion all
 
-  # INT8 QDQ
+  # INT8 QDQ (portable vers TRT avec --int8)
   python transform.py --model models/variants/yolo11n_640_fp32.onnx --int8
-
-  # Combine
-  python transform.py --model models/variants/yolo11n_640_fp32.onnx --fusion basic --int8
 
   # Batch
   python transform.py --pattern "yolo11n_*_fp16.onnx" --fusion all
+
+NOTE: --fusion + --int8 n'est pas supporte (ORT injecte des noeuds non portables)
         """,
     )
 
@@ -741,6 +733,25 @@ Exemples:
     # Valider: au moins une transformation
     if not args.fusion and not args.int8:
         parser.error("Specifier --fusion et/ou --int8")
+
+    # Interdire la combinaison --fusion + --int8
+    # Raison: Les ONNX optimises par ORT contiennent des domaines internes
+    # (com.ms.internal.*, com.microsoft.*) non portables vers TRT/OpenVINO.
+    # Un modele _ortopt_*_int8_qdq.onnx heriterait de ces noeuds non portables.
+    # -> Fusion ORT = axe ORT-only (bench runtime, pas compilation TRT/OAK)
+    # -> INT8 QDQ = axe portable (peut compiler vers TRT avec --int8)
+    if args.fusion and args.int8:
+        parser.error(
+            "La combinaison --fusion + --int8 n'est pas supportee.\n\n"
+            "Raison: Les ONNX optimises par ORT contiennent des domaines internes\n"
+            "(com.ms.internal.*, com.microsoft.*) non portables vers TRT/OpenVINO.\n"
+            "Un modele _ortopt_*_int8_qdq.onnx heriterait de ces problemes.\n\n"
+            "Solutions:\n"
+            "  1) Pour bench ORT: utiliser --fusion seul (ex: --fusion all)\n"
+            "  2) Pour INT8 portable: utiliser --int8 seul depuis FP32\n"
+            "     python transform.py --model yolo11n_640_fp32.onnx --int8\n"
+            "     python compile.py --model models/transformed/yolo11n_640_fp32_int8_qdq.onnx --target orin"
+        )
 
     # Traiter selon le mode
     if args.pattern:
