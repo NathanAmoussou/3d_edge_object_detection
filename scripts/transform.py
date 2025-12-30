@@ -26,6 +26,20 @@ Usage:
 NOTE: La combinaison --fusion + --int8 n'est PAS supportee.
       Les ONNX optimises par ORT contiennent des domaines internes non portables.
       Utiliser --fusion pour bench ORT, ou --int8 pour compilation TRT.
+
+TODO (Phase 2): Batch processing avec YAML manifest
+    - Parser manifest YAML (transforms.yaml)
+    - Pattern matching glob avec fusion_levels multiples
+    - Exemple:
+        defaults:
+          input_dir: models/variants
+          output_dir: models/transformed
+          calib_dataset: coco128
+        transforms:
+          - pattern: "yolo11*_*_fp16.onnx"
+            fusion_levels: [basic, extended, all]
+          - pattern: "yolo11n_*_fp32.onnx"
+            int8: true
 """
 
 import argparse
@@ -743,7 +757,7 @@ NOTE: --fusion + --int8 n'est pas supporte (ORT injecte des noeuds non portables
     if args.fusion and args.int8:
         parser.error(
             "La combinaison --fusion + --int8 n'est pas supportee.\n\n"
-            "Raison: Les ONNX optimises par ORT contiennent des domaines internes\n"
+            "Raison: Les ONNX optimises par ORT peuvent contenir des domaines internes\n"
             "(com.ms.internal.*, com.microsoft.*) non portables vers TRT/OpenVINO.\n"
             "Un modele _ortopt_*_int8_qdq.onnx heriterait de ces problemes.\n\n"
             "Solutions:\n"

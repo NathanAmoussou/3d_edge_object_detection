@@ -13,6 +13,11 @@ Targets:
     - 4070/cpu: Retourne l'ONNX tel quel (inference via ONNX Runtime)
     - oak: Compile ONNX -> BLOB (Myriad X, FP16)
     - orin: Compile ONNX -> ENGINE (TensorRT, sur Jetson)
+
+TODO (Phase 4): Metadata preservation
+    - Copier/enrichir le .json du modele source vers l'artefact compile (.blob, .engine)
+    - Ajouter les infos de compilation: target, flags (--fp16, --int8), timestamp
+    - Preserver la lineage: parent_onnx, transform_type, experiment_id
 """
 
 import argparse
