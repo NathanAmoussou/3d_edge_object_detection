@@ -1,0 +1,49 @@
+[14442C106133DCD600] [1.4] [1.292] [NeuralNetwork(1)] [warning] Network compiled for 6 shaves, maximum available 16, compiling for 8 shaves likely will yield in better performance
+============================================================
+BENCHMARK OAK-D (Myriad X VPU)
+============================================================
+Modele: /home/nathan/Documents/GitHub/3d_edge_object_detection/models/oak/yolo11m_512_fp16_openvino_2022.1_6shave.blob
+Taille: 39.92 MB
+ImgSz: 512
+Classes: 80
+
+Chargement du dataset COCO128...
+[Dataset] coco128/train2017 (equite multi-hardware)
+[Dataset] Chemin images: /home/nathan/Documents/education/master_2/cours/deep_learning_for_image/TP6/datasets/coco128/images/train2017
+[Dataset] Chemin labels: /home/nathan/Documents/education/master_2/cours/deep_learning_for_image/TP6/datasets/coco128/labels/train2017
+[Dataset] Images trouvees: 128 (attendu: 128)
+
+Inference sur OAK-D...
+Warmup (10 frames)...
+  [Sanity-check] Output shape: (451584,), min=-6.1250, max=540.0000
+  20/128 images...
+  40/128 images...
+  60/128 images...
+  80/128 images...
+  100/128 images...
+  120/128 images...
+
+Calcul des metriques...
+
+----------------------------------------
+RESULTATS OAK-D
+----------------------------------------
+Taille blob         : 39.92 MB
+ImgSz               : 512
+Temps E2E moyen     : 437.17 ms
+  Preprocess        : 0.41 ms
+  Inference (USB+VPU): 425.55 ms
+  Postprocess       : 11.21 ms
+Latence p50/p90/p99 : 436.81 / 438.75 / 442.78 ms
+FPS                 : 2.3
+mAP50               : 0.7774
+Precision           : 0.8184
+Recall              : 0.6017
+F1-Score            : 0.6935
+
+Resultats sauvegardes dans: /home/nathan/Documents/GitHub/3d_edge_object_detection/benchmark_results.csv
+CMD: /home/nathan/miniconda3/envs/oak/bin/python /home/nathan/Documents/GitHub/3d_edge_object_detection/scripts/benchmark.py --target oak --model /home/nathan/Documents/GitHub/3d_edge_object_detection/models/oak/yolo11m_512_fp16_openvino_2022.1_6shave.blob --dataset coco128 --num-classes 80
+================================================================================
+
+================================================================================
+RETURN_CODE: 0

@@ -947,7 +947,18 @@ def benchmark_gpu_ort(
     print(f"Recall              : {metrics['recall']:.4f}")
     print(f"F1-Score            : {metrics['f1']:.4f}")
 
-    hardware = "GPU_ORT_CUDA" if "CUDA" in actual_provider else "GPU_ORT_CPU"
+    # -------------------------------------------------------------------------
+    # MICRO-PATCH: rendre le CSV "sweep-friendly"
+    # -------------------------------------------------------------------------
+    # On encode le niveau d'optimisation ORT dans la colonne Hardware afin
+    # de distinguer clairement disable/basic/extended/all dans le CSV.
+    #
+    # Rappel ORT: les niveaux d'optimisation sont définis par GraphOptimizationLevel
+    # (disable/basic/extended/all).
+    provider_tag = "CUDA" if "CUDA" in actual_provider else "CPU"
+    level_tag = (ort_opt_level or "all").upper()
+    hardware = f"GPU_ORT_{provider_tag}_{level_tag}"
+
     save_results(
         hardware=hardware,
         model_name=model_name,
@@ -1170,6 +1181,7 @@ def benchmark_gpu_ultralytics(
 
 def benchmark_oak(model_path: str, num_classes: int, dataset: str = "coco128"):
     """Benchmark sur OAK-D (Myriad X VPU)."""
+
     import depthai as dai
 
     print("=" * 60)
@@ -1214,8 +1226,11 @@ def benchmark_oak(model_path: str, num_classes: int, dataset: str = "coco128"):
     postprocess_times = []
 
     with dai.Device(pipeline) as device:
-        q_in = device.getInputQueue("input")
-        q_out = device.getOutputQueue("nn", maxSize=1, blocking=True)
+        # q_in = device.getInputQueue("input")
+        # q_out = device.getOutputQueue("nn", maxSize=1, blocking=True)
+
+        q_in = device.getInputQueue(name="input", maxSize=1, blocking=False)
+        q_out = device.getOutputQueue(name="nn", maxSize=1, blocking=True)
 
         # Warmup
         print(f"Warmup ({WARMUP_FRAMES} frames)...")

@@ -1,0 +1,50 @@
+============================================================
+BENCHMARK GPU - ONNX Runtime (meme postprocess que OAK)
+============================================================
+Modele: /home/nathan/Documents/GitHub/3d_edge_object_detection/models/variants/yolo11m_320_fp16.onnx
+Taille: 38.42 MB
+ImgSz: 320
+ORT Opt Level: ALL
+Provider: CUDAExecutionProvider
+Input dtype: float16
+
+Chargement du dataset COCO128...
+[Dataset] coco128/train2017 (equite multi-hardware)
+[Dataset] Chemin images: /home/nathan/Documents/education/master_2/cours/deep_learning_for_image/TP6/datasets/coco128/images/train2017
+[Dataset] Chemin labels: /home/nathan/Documents/education/master_2/cours/deep_learning_for_image/TP6/datasets/coco128/labels/train2017
+[Dataset] Images trouvees: 128 (attendu: 128)
+Warmup (10 frames)...
+
+Inference...
+  [Sanity-check] Output shape: (1, 84, 2100), min=0.0000, max=392.0000
+  20/128 images...
+  40/128 images...
+  60/128 images...
+  80/128 images...
+  100/128 images...
+  120/128 images...
+
+Calcul des metriques...
+
+----------------------------------------
+RESULTATS GPU (ONNX Runtime)
+----------------------------------------
+Taille modele       : 38.42 MB
+ImgSz               : 320
+Temps E2E moyen     : 5.58 ms
+  Preprocess        : 0.63 ms
+  Inference         : 4.02 ms
+  Postprocess       : 0.92 ms
+Latence p50/p90/p99 : 5.31 / 6.87 / 7.94 ms
+FPS                 : 179.2
+mAP50               : 0.7031
+Precision           : 0.8262
+Recall              : 0.5221
+F1-Score            : 0.6398
+
+Resultats sauvegardes dans: /home/nathan/Documents/GitHub/3d_edge_object_detection/benchmark_results.csv
+CMD: /home/nathan/miniconda3/envs/oak/bin/python /home/nathan/Documents/GitHub/3d_edge_object_detection/scripts/benchmark.py --target 4070 --backend ort --model /home/nathan/Documents/GitHub/3d_edge_object_detection/models/variants/yolo11m_320_fp16.onnx --dataset coco128 --num-classes 80 --ort-opt-level all
+================================================================================
+
+================================================================================
+RETURN_CODE: 0

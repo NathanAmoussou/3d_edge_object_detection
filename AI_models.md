@@ -70,6 +70,23 @@ for d in distillation_bins:
 ## *Roadmap*
 - [x] Implémenter les optimisations avant le *runtime*
 	- Fait avec `scripts/generate_variants.py`
-- [ ] Implémenter les optimisations aux *runtime*
-	- Où faire ça ? Au niveau du compilateur ?
-- [ ] Implémenter les optimisations spécifiques à chaque *hardware*
+- [x] Implémenter les optimisations aux *runtime*
+	- Fait dans `scripts/benchmark.py`
+	- Attention : On a uniquement fait la fusion et `int8` pour ORT
+- [ ] Implémenter les optimisations spécifiques à chaque *hardware*, notamment la fusion sur TRT et DRT
+## Optimisations supportées actuellement
+
+| *Hardware* (et *runtime*) | Élagage | Quantification                                    | Résolution | Fusion / optimisations “type fusion”                                                     | Nombre de modèles testables          |
+| ------------------------- | ------- | ------------------------------------------------- | ---------- | ---------------------------------------------------------------------------------------- | ------------------------------------ |
+| 4070 (ORT)                | Tous    | FP32/FP16 + (INT8 si modèle QDQ et EP compatible) | Tous       | ORT Graph Optimizations (basic/extended/all) au *runtime*                                | $3 \times 3 \times 5 \times 3 = 135$ |
+| Orin (TRT natif)          | Tous    | FP32/FP16 + INT8 (au build)                       | Tous       | Optimisations TensorRT au *build* (tactics, fusion, etc.) (**à finir d'implém.**)        | Au moins $3 \times 3 \times 5 = 45$  |
+| Orin (ORT)                | Tous    | FP32/FP16 + INT8 (QDQ)                            | Tous       | ORT Graph Optimizations (basic/extended/all) au *runtime*                                | $3 \times 3 \times 5 \times 3 = 135$ |
+| OAK-D (DepthAI + MyriadX) | Tous    | FP16 (MyriadX/RVC2 en pratique)                   | Tous       | Optimisations OpenVINO au *build* ONNX→blob (pas de niveaux ORT) (**à finir d'implém.**) | Au moins $3 \times 1 \times 5 = 15$  |
+### Test rapide
+```
+python scripts/sweep.py --targets 4070 --ort-levels disable all
+```
+
+```
+python scripts/sweep.py --targets oak --compile-oak
+```
