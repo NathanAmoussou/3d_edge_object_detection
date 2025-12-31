@@ -63,6 +63,7 @@ ORT_FUSION_LEVELS = ["disable", "basic", "extended", "all"]
 # INT8 Quantization Config
 DEFAULT_CALIB_DATASET = "coco128"
 DEFAULT_CALIB_SIZE = 100
+DEFAULT_INT8_ACT_TYPE = "qint8"  # S8S8 par defaut pour compatibilite GPU/TRT
 
 
 # =============================================================================
@@ -102,20 +103,27 @@ def parse_imgsz_from_filename(filepath: str) -> int:
     return 640
 
 
-def get_transform_suffix(fusion_level: str | None, is_int8: bool) -> str:
+def get_transform_suffix(
+    fusion_level: str | None,
+    is_int8: bool,
+    int8_act_type: str = "qint8",
+) -> str:
     """
     Genere le suffixe de transformation pour le nom de fichier.
 
     Examples:
         fusion_level="all", is_int8=False -> "_ortopt_all"
-        fusion_level=None, is_int8=True   -> "_int8_qdq"
-        fusion_level="basic", is_int8=True -> "_ortopt_basic_int8_qdq"
+        fusion_level=None, is_int8=True, act=qint8  -> "_int8_qdq_s8s8"
+        fusion_level=None, is_int8=True, act=quint8 -> "_int8_qdq_u8s8"
+        fusion_level="basic", is_int8=True -> "_ortopt_basic_int8_qdq_s8s8"
     """
     parts = []
     if fusion_level and fusion_level != "disable":
         parts.append(f"ortopt_{fusion_level}")
     if is_int8:
-        parts.append("int8_qdq")
+        # Encoder le type d'activation dans le nom: s8s8 ou u8s8
+        act_suffix = "s8s8" if int8_act_type == "qint8" else "u8s8"
+        parts.append(f"int8_qdq_{act_suffix}")
     return "_" + "_".join(parts) if parts else ""
 
 
@@ -123,6 +131,7 @@ def get_transformed_name(
     source_onnx: str,
     fusion_level: str | None = None,
     is_int8: bool = False,
+    int8_act_type: str = "qint8",
 ) -> str:
     """
     Genere le nom du fichier de sortie.
@@ -131,9 +140,13 @@ def get_transformed_name(
         source: yolo11n_640_fp16.onnx
         fusion: "all", int8: False
         output: yolo11n_640_fp16_ortopt_all.onnx
+
+        source: yolo11n_640_fp32.onnx
+        fusion: None, int8: True, act: qint8
+        output: yolo11n_640_fp32_int8_qdq_s8s8.onnx
     """
     stem = Path(source_onnx).stem
-    suffix = get_transform_suffix(fusion_level, is_int8)
+    suffix = get_transform_suffix(fusion_level, is_int8, int8_act_type)
     return f"{stem}{suffix}.onnx"
 
 
@@ -187,9 +200,18 @@ def save_transform_metadata(
     calib_size: int | None = None,
     calib_images: list[str] | None = None,
     calib_dataset_root: str | None = None,
+    int8_act_type: str | None = None,
+    int8_weight_type: str | None = None,
+    int8_per_channel: bool | None = None,
 ) -> None:
     """
     Sauvegarde le metadata JSON etendu pour le modele transforme.
+
+    Inclut les informations INT8 detaillees pour eviter les ambiguites:
+    - int8_format: "QDQ"
+    - activation_type: "QInt8" ou "QUInt8"
+    - weight_type: "QInt8"
+    - per_channel: True/False
     """
     # Partir du metadata parent
     metadata = source_metadata.copy()
@@ -213,6 +235,18 @@ def save_transform_metadata(
     metadata["calib_dataset"] = calib_dataset if is_int8 else None
     metadata["calib_size"] = calib_size if is_int8 else None
     metadata["calib_dataset_root"] = calib_dataset_root if is_int8 else None
+
+    # INT8 format details (pour eviter l'ambiguite S8S8 vs U8S8)
+    if is_int8:
+        metadata["int8_format"] = "QDQ"
+        metadata["activation_type"] = "QInt8" if int8_act_type == "qint8" else "QUInt8"
+        metadata["weight_type"] = "QInt8" if int8_weight_type == "qint8" else "QUInt8"
+        metadata["per_channel"] = int8_per_channel
+    else:
+        metadata["int8_format"] = None
+        metadata["activation_type"] = None
+        metadata["weight_type"] = None
+        metadata["per_channel"] = None
 
     # Hash et liste des images de calibration (chemins relatifs) pour reproductibilite
     if is_int8 and calib_images:
@@ -330,7 +364,11 @@ def letterbox(img, new_shape=(640, 640), color=(114, 114, 114)):
         new_shape = (new_shape, new_shape)
 
     transform = LetterBox(new_shape, auto=False, stride=32, center=True)
-    return transform(image=img)
+    out = transform(image=img)
+    # Selon la version Ultralytics, LetterBox peut retourner un dict ou un np.ndarray
+    if isinstance(out, dict):
+        return out.get("img", out.get("image", img))
+    return out
 
 
 def get_calibration_images(
@@ -372,7 +410,8 @@ def apply_int8_quantization(
     calib_dataset: str = "coco128",
     calib_size: int = 100,
     per_channel: bool = True,
-) -> tuple[str, list[str], str]:
+    activation_type: str = "qint8",
+) -> tuple[str, list[str], str, str, str, bool]:
     """
     Applique INT8 Post-Training Quantization via format QDQ.
 
@@ -382,14 +421,17 @@ def apply_int8_quantization(
         calib_dataset: Dataset pour calibration ("coco128" ou "coco")
         calib_size: Nombre d'images de calibration
         per_channel: Utiliser quantification per-channel (plus precis)
+        activation_type: "qint8" (S8S8, defaut GPU/TRT) ou "quint8" (U8S8)
 
     Returns:
-        Tuple (chemin ONNX quantifie, chemins relatifs calibration, racine dataset)
+        Tuple (chemin ONNX quantifie, chemins relatifs calibration, racine dataset,
+               activation_type effectif, weight_type effectif, per_channel effectif)
 
     Notes:
         - Format QDQ est le plus portable pour INT8
         - TensorRT peut parser les modeles QDQ directement
-        - ORT peut executer les modeles QDQ sur CPU/CUDA
+        - ORT sur GPU prefere S8S8 (QInt8/QInt8) pour acceleration
+        - Per-channel sur les poids ameliore la qualite
     """
     import onnx
     from onnxruntime.quantization import (
@@ -399,9 +441,22 @@ def apply_int8_quantization(
         QuantType,
         quantize_static,
     )
+    from onnxruntime.quantization.shape_inference import quant_pre_process
 
     print("  Applying INT8 QDQ quantization")
     print(f"    Calibration: {calib_dataset} ({calib_size} images)")
+
+    # Mapper activation_type string -> QuantType
+    act_type_map = {
+        "qint8": QuantType.QInt8,
+        "quint8": QuantType.QUInt8,
+    }
+    quant_activation_type = act_type_map.get(activation_type, QuantType.QInt8)
+    quant_weight_type = QuantType.QInt8  # Toujours QInt8 pour les poids
+
+    act_label = "QInt8 (S8)" if activation_type == "qint8" else "QUInt8 (U8)"
+    print(f"    Activation type: {act_label}")
+    print("    Weight type: QInt8 (S8)")
 
     # Parser imgsz depuis le nom de fichier
     imgsz = parse_imgsz_from_filename(onnx_path)
@@ -413,8 +468,29 @@ def apply_int8_quantization(
     print(f"    Images trouvees: {len(calib_abs_paths)}")
     print(f"    Dataset root: {dataset_root}")
 
+    # --- Pre-process: shape inference avant quantification ---
+    # Recommande par ORT pour eviter des ranges manquantes et stabiliser la quantif
+    print("    Pre-processing: shape inference...")
+    preprocessed_path = Path(output_dir) / f"_temp_preprocess_{Path(onnx_path).name}"
+    os.makedirs(output_dir, exist_ok=True)
+
+    try:
+        quant_pre_process(
+            input_model_path=onnx_path,
+            output_model_path=str(preprocessed_path),
+            skip_optimization=False,
+            skip_onnx_shape=False,
+            skip_symbolic_shape=False,
+        )
+        onnx_for_quant = str(preprocessed_path)
+        print("    Pre-processing: OK")
+    except Exception as e:
+        print(f"    [Warning] Pre-processing failed: {e}")
+        print("    Continuing with original model...")
+        onnx_for_quant = onnx_path
+
     # Obtenir le nom de l'input et verifier l'opset
-    model = onnx.load(onnx_path)
+    model = onnx.load(onnx_for_quant)
     input_name = model.graph.input[0].name
 
     # Verifier opset >= 13 pour per-channel quantization
@@ -463,33 +539,60 @@ def apply_int8_quantization(
 
     calib_reader = COCOCalibrationReader(calib_abs_paths, imgsz, input_name)
 
-    # Chemin de sortie
-    output_name = get_transformed_name(onnx_path, is_int8=True)
+    # Chemin de sortie (inclut s8s8 ou u8s8 dans le nom)
+    output_name = get_transformed_name(
+        onnx_path, is_int8=True, int8_act_type=activation_type
+    )
     os.makedirs(output_dir, exist_ok=True)
     output_path = Path(output_dir) / output_name
 
+    # Extra options pour S8S8 symetrique (recommande pour GPU/TRT)
+    extra_options = {
+        "ActivationSymmetric": activation_type == "qint8",  # Symetrique pour S8
+        "WeightSymmetric": True,  # Toujours symetrique pour les poids
+    }
+
     # Quantifier
     print("    Quantification en cours...")
+    print(f"    Extra options: {extra_options}")
     try:
         quantize_static(
-            model_input=onnx_path,
+            model_input=onnx_for_quant,
             model_output=str(output_path),
             calibration_data_reader=calib_reader,
             quant_format=QuantFormat.QDQ,
             per_channel=per_channel,
-            weight_type=QuantType.QInt8,
-            activation_type=QuantType.QUInt8,  # Activations en uint8 (standard)
+            weight_type=quant_weight_type,
+            activation_type=quant_activation_type,
             calibrate_method=CalibrationMethod.MinMax,
+            extra_options=extra_options,
         )
     except Exception as e:
         print(f"    [ERREUR] Echec quantification: {e}")
+        # Nettoyage du fichier temporaire
+        if preprocessed_path.exists():
+            preprocessed_path.unlink()
         raise
+
+    # Nettoyage du fichier temporaire de preprocessing
+    if preprocessed_path.exists():
+        try:
+            preprocessed_path.unlink()
+        except Exception:
+            pass
 
     size_mb = os.path.getsize(output_path) / (1024 * 1024)
     print(f"    -> {output_path.name} ({size_mb:.2f} MB)")
 
-    # Retourner les chemins relatifs et la racine pour le metadata
-    return str(output_path), calib_rel_paths, dataset_root
+    # Retourner les chemins relatifs, racine, et les types effectifs pour le metadata
+    return (
+        str(output_path),
+        calib_rel_paths,
+        dataset_root,
+        activation_type,
+        "qint8",
+        per_channel,
+    )
 
 
 # =============================================================================
@@ -504,6 +607,7 @@ def transform_model(
     int8: bool = False,
     calib_dataset: str = "coco128",
     calib_size: int = 100,
+    int8_act_type: str = "qint8",
     runtime_only: bool = False,
     dry_run: bool = False,
 ) -> str | None:
@@ -517,6 +621,7 @@ def transform_model(
         int8: Appliquer quantification INT8 QDQ
         calib_dataset: Dataset pour calibration INT8
         calib_size: Nombre d'images de calibration
+        int8_act_type: Type d'activation INT8 ("qint8" pour S8S8, "quint8" pour U8S8)
         runtime_only: Ne pas serialiser (juste valider)
         dry_run: Afficher sans executer
 
@@ -529,7 +634,7 @@ def transform_model(
         return None
 
     # Determiner le nom de sortie
-    output_name = get_transformed_name(onnx_path, fusion_level, int8)
+    output_name = get_transformed_name(onnx_path, fusion_level, int8, int8_act_type)
     output_path = Path(output_dir) / output_name
 
     print(f"\n{'=' * 60}")
@@ -540,7 +645,8 @@ def transform_model(
     if fusion_level:
         print(f"  Fusion: {fusion_level}")
     if int8:
-        print(f"  INT8 QDQ: {calib_dataset} ({calib_size} images)")
+        act_label = "S8S8" if int8_act_type == "qint8" else "U8S8"
+        print(f"  INT8 QDQ ({act_label}): {calib_dataset} ({calib_size} images)")
 
     if dry_run:
         print("  [dry-run] Aucune action effectuee")
@@ -551,6 +657,9 @@ def transform_model(
 
     calib_images = None
     calib_dataset_root = None
+    int8_act_type_effective = None
+    int8_weight_type_effective = None
+    int8_per_channel_effective = None
     current_onnx = onnx_path
 
     # Etape 1: Fusion ORT (si demandee)
@@ -564,8 +673,19 @@ def transform_model(
     # Etape 2: INT8 QDQ (si demandee)
     # Note: fusion_level et int8 sont mutuellement exclusifs (valide par CLI)
     if int8:
-        result, calib_images, calib_dataset_root = apply_int8_quantization(
-            current_onnx, output_dir, calib_dataset, calib_size
+        (
+            result,
+            calib_images,
+            calib_dataset_root,
+            int8_act_type_effective,
+            int8_weight_type_effective,
+            int8_per_channel_effective,
+        ) = apply_int8_quantization(
+            current_onnx,
+            output_dir,
+            calib_dataset,
+            calib_size,
+            activation_type=int8_act_type,
         )
         current_onnx = result
 
@@ -581,6 +701,9 @@ def transform_model(
             calib_size=calib_size if int8 else None,
             calib_images=calib_images,
             calib_dataset_root=calib_dataset_root,
+            int8_act_type=int8_act_type_effective,
+            int8_weight_type=int8_weight_type_effective,
+            int8_per_channel=int8_per_channel_effective,
         )
 
     return current_onnx
@@ -600,6 +723,7 @@ def process_single(args) -> int:
         int8=args.int8,
         calib_dataset=args.calib_dataset,
         calib_size=args.calib_size,
+        int8_act_type=args.int8_act_type,
         runtime_only=args.runtime_only,
         dry_run=args.dry_run,
     )
@@ -623,7 +747,9 @@ def process_pattern(args) -> int:
     success_count = 0
     for onnx_path in matches:
         output_path = Path(args.output or str(DEFAULT_OUTPUT_DIR))
-        expected_name = get_transformed_name(onnx_path, args.fusion, args.int8)
+        expected_name = get_transformed_name(
+            onnx_path, args.fusion, args.int8, args.int8_act_type
+        )
 
         # Skip si existe deja
         if args.skip_existing and (output_path / expected_name).exists():
@@ -638,6 +764,7 @@ def process_pattern(args) -> int:
             int8=args.int8,
             calib_dataset=args.calib_dataset,
             calib_size=args.calib_size,
+            int8_act_type=args.int8_act_type,
             runtime_only=args.runtime_only,
             dry_run=args.dry_run,
         )
@@ -712,6 +839,16 @@ NOTE: --fusion + --int8 n'est pas supporte (ORT injecte des noeuds non portables
         type=int,
         default=DEFAULT_CALIB_SIZE,
         help=f"Nombre d'images de calibration (defaut: {DEFAULT_CALIB_SIZE})",
+    )
+    parser.add_argument(
+        "--int8-act-type",
+        type=str,
+        default=DEFAULT_INT8_ACT_TYPE,
+        choices=["qint8", "quint8"],
+        help=(
+            f"Type d'activation INT8 (defaut: {DEFAULT_INT8_ACT_TYPE}). "
+            "qint8 = S8S8 (GPU/TRT compatible), quint8 = U8S8 (CPU legacy)"
+        ),
     )
 
     # Options de sortie

@@ -101,6 +101,48 @@ WARMUP_FRAMES = 10
 # =============================================================================
 
 
+def is_int8_qdq_model(model_path: str) -> bool:
+    """
+    Detecte si un modele ONNX est un modele INT8 QDQ.
+
+    Detection via:
+    1. Nom du fichier contient "_int8_qdq"
+    2. Metadata JSON indique int8_format="QDQ"
+    3. (Fallback) Scan ONNX pour noeuds QuantizeLinear/DequantizeLinear
+    """
+    path = Path(model_path)
+
+    # 1. Detection par nom
+    if "_int8_qdq" in path.stem:
+        return True
+
+    # 2. Detection par metadata JSON
+    json_path = path.with_suffix(".json")
+    if json_path.exists():
+        try:
+            with open(json_path) as f:
+                metadata = json.load(f)
+                if metadata.get("int8_format") == "QDQ":
+                    return True
+                if metadata.get("int8_calibration") is True:
+                    return True
+        except (json.JSONDecodeError, KeyError):
+            pass
+
+    # 3. Scan ONNX (plus lent, fallback)
+    try:
+        import onnx
+
+        model = onnx.load(model_path)
+        for node in model.graph.node:
+            if node.op_type in ("QuantizeLinear", "DequantizeLinear"):
+                return True
+    except Exception:
+        pass
+
+    return False
+
+
 def compute_timing_stats(
     e2e_times: list[float],
     preprocess_times: list[float],
@@ -266,6 +308,9 @@ def save_results(
     inference_ms: float = 0.0,
     postprocess_ms: float = 0.0,
     fps: float = 0.0,
+    # ORT config tracking (Phase 4)
+    ort_level_requested: str = "N/A",
+    providers_used: str = "N/A",
 ):
     """
     Sauvegarde les resultats dans le CSV avec metadonnees completes.
@@ -312,6 +357,9 @@ def save_results(
                     "Inference_ms",
                     "Postprocess_ms",
                     "FPS",
+                    # ORT config tracking (Phase 4)
+                    "ORT_Level_Requested",
+                    "Providers_Used",
                     # Metadonnees
                     "Dataset",
                     "Backend",
@@ -353,6 +401,9 @@ def save_results(
                 f"{inference_ms:.2f}",
                 f"{postprocess_ms:.2f}",
                 f"{fps:.2f}",
+                # ORT config tracking (Phase 4)
+                ort_level_requested,
+                providers_used,
                 # Metadonnees
                 dataset,
                 backend,
@@ -749,6 +800,11 @@ def benchmark_gpu_ort(
 
         Pour comparer les fusion levels offline, utiliser "disable"
         pour eviter qu'ORT re-optimise et gomme les differences.
+
+    Notes INT8 QDQ:
+        - Si le modele est INT8 QDQ, TensorRT EP est utilise en priorite
+        - TensorRT EP accelere les modeles QDQ mieux que CUDA EP
+        - Cache TensorRT engine active pour eviter re-build a chaque run
     """
     import onnxruntime as ort
 
@@ -764,16 +820,24 @@ def benchmark_gpu_ort(
     print(f"Taille: {size_mb:.2f} MB")
     print(f"ImgSz: {imgsz}")
 
+    # Detecter si modele INT8 QDQ
+    is_int8 = is_int8_qdq_model(model_path)
+    if is_int8:
+        print("  [Detected] Modele INT8 QDQ")
+
     # Configurer SessionOptions avec niveau d'optimisation
     sess_options = ort.SessionOptions()
 
     # Auto-detection: DISABLE pour modeles _ortopt_*, sinon defaut ORT
+    ort_level_requested = ort_opt_level or "auto"
     if ort_opt_level is None:
         if "_ortopt_" in model_name:
             ort_opt_level = "disable"
             print("  [Auto] Modele _ortopt_* detecte -> ORT_DISABLE_ALL")
         else:
             ort_opt_level = "all"
+    # Niveau effectif apres auto-detection (pour le CSV)
+    ort_level_effective = ort_opt_level
 
     opt_level_map = {
         "disable": ort.GraphOptimizationLevel.ORT_DISABLE_ALL,
@@ -784,20 +848,71 @@ def benchmark_gpu_ort(
     sess_options.graph_optimization_level = opt_level_map[ort_opt_level]
     print(f"ORT Opt Level: {ort_opt_level.upper()}")
 
-    # Creer la session ONNX Runtime avec CUDA EP
-    providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+    # --- Choix des providers selon le type de modele ---
+    # Pour INT8 QDQ: TensorRT EP en priorite (meilleure acceleration)
+    # Pour FP16/FP32: CUDA EP standard
+    #
+    # TODO (BUG INT8): CUDA EP ne supporte pas bien les ops QDQ -> fallback CPU massif
+    #   - CUDA EP execute chaque noeud individuellement, si pas capable -> CPU
+    #   - Sur modeles INT8 QDQ, beaucoup d'ops quantifiees non supportees -> CPU spike
+    #   - Fix: Verifier TensorrtExecutionProvider ou NvTensorRtRtxExecutionProvider (RTX)
+    #   - Si pas de TRT EP dispo, l'INT8 sera majoritairement CPU meme avec CUDA EP en tete
+    #   - Ref: https://onnxruntime.ai/docs/execution-providers/TensorRT-ExecutionProvider.html
+    #
+    available_providers = ort.get_available_providers()
+    trt_available = "TensorrtExecutionProvider" in available_providers
+    cuda_available = "CUDAExecutionProvider" in available_providers
+
+    if is_int8 and trt_available:
+        # TensorRT EP avec cache pour INT8 QDQ
+        # Configuration du cache TensorRT pour eviter re-build
+        cache_dir = Path(model_path).parent / ".trt_cache"
+        cache_dir.mkdir(exist_ok=True)
+
+        trt_provider_options = {
+            "trt_fp16_enable": True,
+            "trt_int8_enable": True,
+            "trt_engine_cache_enable": True,
+            "trt_engine_cache_path": str(cache_dir),
+            "trt_timing_cache_enable": True,
+        }
+
+        providers = [
+            ("TensorrtExecutionProvider", trt_provider_options),
+            "CUDAExecutionProvider",
+            "CPUExecutionProvider",
+        ]
+        print(f"  [INT8 QDQ] Using TensorRT EP (cache: {cache_dir})")
+    elif cuda_available:
+        providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+    else:
+        providers = ["CPUExecutionProvider"]
+        print("  [Warning] Ni TensorRT ni CUDA disponibles, fallback CPU")
+
+    # Creer la session ONNX Runtime
     try:
         session = ort.InferenceSession(
             model_path, sess_options=sess_options, providers=providers
         )
-        actual_provider = session.get_providers()[0]
+        actual_providers = session.get_providers()
+        actual_provider = actual_providers[0]
+        providers_used = ",".join(actual_providers)
         print(f"Provider: {actual_provider}")
+        print(f"All providers: {providers_used}")
+
+        # Warning si INT8 sans TensorRT
+        if is_int8 and "TensorrtExecutionProvider" not in actual_providers:
+            print(
+                "  [WARNING] INT8 QDQ sans TensorRT EP -> acceleration peut etre limitee"
+            )
     except Exception as e:
-        print(f"  [Warning] CUDA non disponible, fallback CPU: {e}")
+        print(f"  [Warning] Erreur creation session: {e}")
+        print("  [Fallback] CPU uniquement")
         session = ort.InferenceSession(
             model_path, sess_options=sess_options, providers=["CPUExecutionProvider"]
         )
         actual_provider = "CPUExecutionProvider"
+        providers_used = "CPUExecutionProvider"
 
     input_info = session.get_inputs()[0]
     output_info = session.get_outputs()[0]
@@ -955,7 +1070,12 @@ def benchmark_gpu_ort(
     #
     # Rappel ORT: les niveaux d'optimisation sont définis par GraphOptimizationLevel
     # (disable/basic/extended/all).
-    provider_tag = "CUDA" if "CUDA" in actual_provider else "CPU"
+    if "TensorrtExecutionProvider" in actual_provider:
+        provider_tag = "TRT"
+    elif "CUDA" in actual_provider:
+        provider_tag = "CUDA"
+    else:
+        provider_tag = "CPU"
     level_tag = (ort_opt_level or "all").upper()
     hardware = f"GPU_ORT_{provider_tag}_{level_tag}"
 
@@ -981,6 +1101,9 @@ def benchmark_gpu_ort(
         inference_ms=timing["inference_ms"],
         postprocess_ms=timing["postprocess_ms"],
         fps=timing["fps"],
+        # ORT config tracking (Phase 4)
+        ort_level_requested=f"{ort_level_requested}->{ort_level_effective}",
+        providers_used=providers_used,
     )
 
 

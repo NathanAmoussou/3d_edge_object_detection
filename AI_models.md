@@ -6,17 +6,26 @@
 - Quantification (*quantisation*)
 - Réduction de la résolution d'entrée (*input resolution scaling*)
 - Fusion de couches (*layer fusion*)
-
-| Optimisation       | Paramètre                               | Granularité                                                                                                                                                    |
-| ------------------ | --------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Élagage            | `model scale` ou `depth/width multiple` | Discret :<br>- Nano (`yolo11n`)<br>- Small (`yolo11s`)<br>- Medium (`yolo11m`)<br>Continu :<br>Modifier le `.yaml`, par ex `width_multiple` (0.25, 0.50, 0.75) |
-| Distillation       | Taille du `Teacher`                     | - Teacher = `yolo11s` (petit prof)<br>- Teacher = `yolo11m` (moyen prof)<br>- Teacher = `yolo11x` (grand prof)                                                 |
-| Quantification     | `precision`                             | - FP32 (Base, aucune quantif)<br>- FP16 (Half-precision, idéal Jetson)<br>- INT8 (Entier 8-bits, idéal NPU/Coral)                                              |
-| *Input resolution* | `imgsz` (taille image en pixels)        | Continu (par pas de 32) :<br>- 640 (standard)<br>- 512<br>- 416<br>- 320 (rapide)<br>- 256 (très rapide)                                                       |
-| Fusion de couches  | `GraphOptimizationLevel` (ONNX Runtime) | - `ORT_DISABLE_ALL` (aucune fusion)<br>- `ORT_ENABLE_BASIC` (fusion de base)<br>- `ORT_ENABLE_ALL` (fusion complexe)                                           |
-
 ### Optimisations spécifiques à chaque matériel
-- À compléter
+- [Luxonis OAK-D Pro](https://docs.luxonis.com/hardware/products/OAK-D%20Pro)
+	- Modification du nombre de SHAVEs alloués lors de la compilation
+	- Délestage du post-traitement (Yolo Node), à explorer
+- ReComputer J3010-Edge avec NVIDIA Jetson Orin Nano 4 G
+	- Le paramètre "Builder Optimization Level" (optimisation)
+	- Le paramètre "Sparsity" (accélération matérielle spécifique à Orin)
+
+| Optimisation                     | Paramètre                                | Granularité                                                                                                                                                    |
+| -------------------------------- | ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Élagage                          | `model scale` ou `depth/width multiple`  | Discret :<br>- Nano (`yolo11n`)<br>- Small (`yolo11s`)<br>- Medium (`yolo11m`)<br>Continu :<br>Modifier le `.yaml`, par ex `width_multiple` (0.25, 0.50, 0.75) |
+| Distillation                     | Taille du `Teacher`                      | - Teacher = `yolo11s` (petit prof)<br>- Teacher = `yolo11m` (moyen prof)<br>- Teacher = `yolo11x` (grand prof)                                                 |
+| Quantification                   | `precision`                              | - FP32 (Base, aucune quantif)<br>- FP16 (Half-precision, idéal Jetson)<br>- INT8 (Entier 8-bits, idéal NPU/Coral)                                              |
+| *Input resolution*               | `imgsz` (taille image en pixels)         | Continu (par pas de 32) :<br>- 640 (standard)<br>- 512<br>- 416<br>- 320 (rapide)<br>- 256 (très rapide)                                                       |
+| Fusion de couches                | `GraphOptimizationLevel` (ONNX Runtime)  | - `ORT_DISABLE_ALL` (aucune fusion)<br>- `ORT_ENABLE_BASIC` (fusion de base)<br>- `ORT_ENABLE_ALL` (fusion complexe)                                           |
+| SHAVEs OAK                       |                                          | - 4<br>- 5<br>- 6<br>- 7                                                                                                                                       |
+| Délestage du post-traitement OAK |                                          | - False<br>- True                                                                                                                                              |
+| Optimisation Orin                | `trtexec --builderOptimizationLevel=N`   | - 3<br>- 5                                                                                                                                                     |
+| Accélération matérielle Orin     | `trtexec --sparsity=enable` (ou `force`) | - False<br>- True                                                                                                                                              |
+
 ## Ordre des optimisations
 - Sans **distillation** :
 	1. Élagage
@@ -46,6 +55,41 @@ for d in distillation_bins:
 - Tous les *hardwares* n'auront pas le même point de départ.
 - La couche distillation risque d'être lente. D'abord développer tous les modèles sans distillation, ensuite aviser.
 - **Se renseigner sur les optimisations obligatoires ou par défaut appliquées lors des différentes compilations (Blob, ONNX...).**
+### Nombres de variantes et *bins* par *hardware*
+```
+if hardware == "4070": # onnx runtime
+	elagage_bins = [yolo11m, yolo11s, yolo11n]
+	quantification_bins = [fp32, fp16, int8]
+	resolution_bins = [640, 512, 416, 320, 256]
+	fusion_bins = [ORT_ENABLE_ALL, ORT_ENABLE_BASIC, ORT_DISABLE_ALL]
+	
+	nb_variantes = 3 * 3 * 5 * 3 = 135
+
+if hardware == "oak": # depthai runtime
+	elagage_bins = [yolo11m, yolo11s, yolo11n]
+	quantification_bins = [fp16]
+	resolution_bins = [640, 512, 416, 320, 256]
+	shaves_bins = [4, 5, 6, 7, 8]
+	fusion_bins = [False, True]
+	
+	nb_variantes = 3 * 1 * 5 * 5 * 2 = 150
+
+if hardware == "orin":
+	elagage_bins = [yolo11m, yolo11s, yolo11n]
+	quantification_bins = [fp32, fp16, int8]
+	resolution_bins = [640, 512, 416, 320, 256]
+	
+	if runtime == "ort":
+		fusion_bins = [ORT_ENABLE_ALL, ORT_ENABLE_BASIC, ORT_DISABLE_ALL]
+		
+		nb_variantes = 3 * 3 * 5 * 3 = 135
+	
+	elif runtime == "trt":
+		optim_bins = [3, 4, 5]
+		sparsity = [False, True]
+		
+		nb_variantes = 3 * 3 * 5 * 2 * 2 = 180
+```
 ## Point de départ de chaque *hardware*
 
 | *Hardware*                | Élagage min.          | Quantification min. | Résolution min. | Fusion min.        |
@@ -89,4 +133,39 @@ python scripts/sweep.py --targets 4070 --ort-levels disable all
 
 ```
 python scripts/sweep.py --targets oak --compile-oak
+```
+## Mesures sur 4070 ORT
+- Générer les 30 `fp32`/`fp16` :
+```
+python scripts/generate_variants.py \
+  --output models/variants \
+  --models n s m \
+  --resolutions 640 512 416 320 256
+```
+- Générer les 15 `int8` :
+```
+python scripts/transform.py \
+  --input-dir models/variants \
+  --pattern "yolo11*_fp32.onnx" \
+  --int8 \python scripts/sweep.py --targets 4070 --ort-levels disable basic all
+
+  --int8-act-type qint8 \
+  --calib-dataset coco128 \
+  --calib-size 100 \
+  --output models/transformed \
+  --skip-existing
+```
+- Vérifier les *runtime providers* :
+```
+python -c "import onnxruntime as ort; print(ort.get_available_providers())"
+```
+Retourne : `python scripts/sweep.py --targets 4070 --ort-levels disable basic all --dry-run`
+- *Dry-run* :
+```
+python scripts/sweep.py --targets 4070 --ort-levels disable basic all --dry-run
+```
+Retourne : `...Expected runs: 135...`
+- *Run* :
+```
+python scripts/sweep.py --targets 4070 --ort-levels disable basic all
 ```

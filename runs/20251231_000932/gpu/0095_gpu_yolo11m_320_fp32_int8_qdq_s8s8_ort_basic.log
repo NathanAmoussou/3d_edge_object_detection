@@ -1,0 +1,61 @@
+[1;31m2025-12-31 00:15:23.800749574 [E:onnxruntime:Default, provider_bridge_ort.cc:2223 TryGetProviderInfo_TensorRT] /onnxruntime_src/onnxruntime/core/session/provider_bridge_ort.cc:1844 onnxruntime::Provider& onnxruntime::ProviderLibrary::Get() [ONNXRuntimeError] : 1 : FAIL : Failed to load library libonnxruntime_providers_tensorrt.so with error: libnvinfer.so.10: cannot open shared object file: No such file or directory
+[m
+============================================================
+BENCHMARK GPU - ONNX Runtime (meme postprocess que OAK)
+============================================================
+Modele: /home/nathan/Documents/GitHub/3d_edge_object_detection/models/transformed/yolo11m_320_fp32_int8_qdq_s8s8.onnx
+Taille: 20.01 MB
+ImgSz: 320
+  [Detected] Modele INT8 QDQ
+ORT Opt Level: BASIC
+  [INT8 QDQ] Using TensorRT EP (cache: /home/nathan/Documents/GitHub/3d_edge_object_detection/models/transformed/.trt_cache)
+*************** EP Error ***************
+EP Error /onnxruntime_src/onnxruntime/python/onnxruntime_pybind_state.cc:560 void onnxruntime::python::RegisterTensorRTPluginsAsCustomOps(PySessionOptions&, const onnxruntime::ProviderOptions&) Please install TensorRT libraries as mentioned in the GPU requirements page, make sure they're in the PATH or LD_LIBRARY_PATH, and that your GPU is supported.
+ when using [('TensorrtExecutionProvider', {'trt_fp16_enable': True, 'trt_int8_enable': True, 'trt_engine_cache_enable': True, 'trt_engine_cache_path': '/home/nathan/Documents/GitHub/3d_edge_object_detection/models/transformed/.trt_cache', 'trt_timing_cache_enable': True}), 'CUDAExecutionProvider', 'CPUExecutionProvider']
+Falling back to ['CPUExecutionProvider'] and retrying.
+****************************************
+Provider: CPUExecutionProvider
+All providers: CPUExecutionProvider
+  [WARNING] INT8 QDQ sans TensorRT EP -> acceleration peut etre limitee
+Input dtype: float32
+
+Chargement du dataset COCO128...
+[Dataset] coco128/train2017 (equite multi-hardware)
+[Dataset] Chemin images: /home/nathan/Documents/education/master_2/cours/deep_learning_for_image/TP6/datasets/coco128/images/train2017
+[Dataset] Chemin labels: /home/nathan/Documents/education/master_2/cours/deep_learning_for_image/TP6/datasets/coco128/labels/train2017
+[Dataset] Images trouvees: 128 (attendu: 128)
+Warmup (10 frames)...
+
+Inference...
+  [Sanity-check] Output shape: (1, 84, 2100), min=0.0000, max=351.5535
+  20/128 images...
+  40/128 images...
+  60/128 images...
+  80/128 images...
+  100/128 images...
+  120/128 images...
+
+Calcul des metriques...
+
+----------------------------------------
+RESULTATS GPU (ONNX Runtime)
+----------------------------------------
+Taille modele       : 20.01 MB
+ImgSz               : 320
+Temps E2E moyen     : 87.57 ms
+  Preprocess        : 0.54 ms
+  Inference         : 86.68 ms
+  Postprocess       : 0.36 ms
+Latence p50/p90/p99 : 86.47 / 89.87 / 108.46 ms
+FPS                 : 11.4
+mAP50               : 0.0000
+Precision           : 0.0000
+Recall              : 0.0000
+F1-Score            : 0.0000
+
+Resultats sauvegardes dans: /home/nathan/Documents/GitHub/3d_edge_object_detection/benchmark_results.csv
+CMD: /home/nathan/miniconda3/envs/oak/bin/python /home/nathan/Documents/GitHub/3d_edge_object_detection/scripts/benchmark.py --target 4070 --backend ort --model /home/nathan/Documents/GitHub/3d_edge_object_detection/models/transformed/yolo11m_320_fp32_int8_qdq_s8s8.onnx --dataset coco128 --num-classes 80 --ort-opt-level basic
+================================================================================
+
+================================================================================
+RETURN_CODE: 0

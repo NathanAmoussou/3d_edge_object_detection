@@ -120,8 +120,50 @@ def main():
                 continue
             jobs.append(("oak", onnx, None))
 
-    print(f"[sweep] Jobs: {len(jobs)}")
+    # -------------------------------------------------------------------------
+    # Afficher expected_runs avec decomposition par facteur
+    # -------------------------------------------------------------------------
+    # Compter les facteurs pour aider a diagnostiquer les runs inattendus
+    gpu_models_count = 0
+    ort_levels_per_model = {}
+    oak_count = 0
+
+    for kind, model_path, lvl in jobs:
+        if kind == "gpu":
+            gpu_models_count += 1
+            model_key = model_path.stem
+            if model_key not in ort_levels_per_model:
+                ort_levels_per_model[model_key] = []
+            ort_levels_per_model[model_key].append(lvl)
+        elif kind == "oak":
+            oak_count += 1
+
+    print(f"\n{'=' * 60}")
+    print("SWEEP CONFIGURATION")
+    print(f"{'=' * 60}")
+    print(f"  Expected runs: {len(jobs)}")
+    print(f"    - GPU jobs: {gpu_models_count}")
+    print(f"    - OAK jobs: {oak_count}")
+
+    # Decomposition GPU
+    if gpu_models_count > 0:
+        unique_models = len(ort_levels_per_model)
+        # Compter les niveaux ORT distincts utilises
+        all_levels = set()
+        for levels in ort_levels_per_model.values():
+            all_levels.update(levels)
+        print("  GPU breakdown:")
+        print(f"    - Unique models: {unique_models}")
+        print(f"    - ORT levels used: {sorted(all_levels)}")
+        avg_levels = gpu_models_count / max(unique_models, 1)
+        print(
+            f"    - Formula: {unique_models} models x ~{avg_levels:.1f} levels/model = {gpu_models_count}"
+        )
+
+    print(f"{'=' * 60}\n")
+
     if args.dry_run:
+        print("[dry-run] Jobs preview:")
         for j in jobs[:50]:
             print("  ", j)
         if len(jobs) > 50:
