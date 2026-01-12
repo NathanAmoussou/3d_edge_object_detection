@@ -1,17 +1,30 @@
 """
-Benchmark d'un modele YOLO sur GPU, OAK-D ou Jetson Orin.
+Benchmark d'un modele YOLO sur GPU, CPU, OAK-D ou Jetson Orin.
 
 Usage:
+    # GPU (RTX 4070)
     python scripts/benchmark.py --target 4070 --model models/variants/yolo11n_640_fp16.onnx
-    python scripts/benchmark.py --target oak --model models/oak/yolo11n_640_fp16.blob --num-classes 80
+
+    # CPU (PC ou Raspberry Pi 4)
+    python scripts/benchmark.py --target cpu --model models/variants/yolo11n_640_fp32.onnx --host-tag PC --cpu-threads 8
+    python scripts/benchmark.py --target cpu --model models/variants/yolo11n_320_fp32.onnx --host-tag PI4 --cpu-threads 4
+
+    # OAK-D (Myriad X VPU)
+    python scripts/benchmark.py --target oak --model models/oak/yolo11n_640_fp16.blob --host-tag PC
+    python scripts/benchmark.py --target oak --model models/oak/yolo11n_640_fp16.blob --host-tag PI4
+
+    # Jetson Orin
     python scripts/benchmark.py --target orin --model models/orin/yolo11n_640_fp16.engine --num-classes 80
 
 Options:
-    --target 4070|oak|orin   : Cible hardware
-    --model PATH             : Chemin vers le modele (.onnx pour GPU, .blob pour OAK, .engine pour Orin)
-    --num-classes N          : Nombre de classes du modele (defaut: 80 pour COCO)
-    --dataset coco128|coco   : Dataset a utiliser (defaut: coco128)
-    --backend ort|ultralytics: Backend GPU (defaut: ort pour ONNX Runtime, meme postprocess que OAK)
+    --target 4070|cpu|oak|orin : Cible hardware
+    --model PATH               : Chemin vers le modele (.onnx pour GPU/CPU, .blob pour OAK, .engine pour Orin)
+    --num-classes N            : Nombre de classes du modele (defaut: 80 pour COCO)
+    --dataset coco128|coco     : Dataset a utiliser (defaut: coco128)
+    --backend ort|ultralytics  : Backend GPU (defaut: ort pour ONNX Runtime, meme postprocess que OAK)
+    --host-tag TAG             : Tag identifiant le host (ex: PC, PI4). Auto-detecte si non fourni.
+    --cpu-threads N            : Nombre de threads intra-op pour inference CPU (defaut: auto)
+    --cpu-execution-mode       : Mode d'execution ORT CPU: sequential ou parallel (defaut: sequential)
 
 ===============================================================================
 DECISIONS DE CONCEPTION - EQUITE MULTI-HARDWARE
@@ -20,7 +33,8 @@ DECISIONS DE CONCEPTION - EQUITE MULTI-HARDWARE
 1. MEME ONNX SOURCE
    -----------------
    Toutes les targets partent du meme ONNX (genere par generate_variants.py).
-   - GPU: execute l'ONNX via ONNX Runtime (meme postprocess que OAK)
+   - GPU: execute l'ONNX via ONNX Runtime CUDA/TensorRT EP
+   - CPU: execute l'ONNX via ONNX Runtime CPUExecutionProvider
    - OAK: ONNX compile en BLOB
    - Orin: ONNX compile en ENGINE
 
@@ -51,6 +65,7 @@ DECISIONS DE CONCEPTION - EQUITE MULTI-HARDWARE
    ATTENTION: Device_Time_ms n'a pas la meme signification selon la target!
 
    - GPU (ORT): temps session.run() = inference pure
+   - CPU (ORT): temps session.run() = inference pure
    - OAK: temps send() -> get() = USB + VPU + USB (pas VPU seul)
    - Orin: temps session.run() ou result.speed["inference"]
 
@@ -60,6 +75,15 @@ DECISIONS DE CONCEPTION - EQUITE MULTI-HARDWARE
 6. CSV UNIFIE
    -----------
    save_results() ecrit les memes colonnes pour toutes les targets.
+
+7. HOST TAGGING
+   -------------
+   Pour distinguer les runs sur differents hosts (PC vs Pi4), un tag est
+   enregistre dans la colonne Hardware:
+   - CPU: CPU_ORT_{host_tag}_{exec_mode} (ex: CPU_ORT_PC_x86_64_SEQ)
+   - OAK: OAK_MyriadX_HOST_{host_tag} (ex: OAK_MyriadX_HOST_PI4_aarch64)
+
+   Le host_tag peut etre specifie via --host-tag ou auto-detecte.
 
 ===============================================================================
 """
@@ -284,6 +308,47 @@ def get_versions():
     except (ImportError, AttributeError):
         versions["onnxruntime"] = "N/A"
     return versions
+
+
+def detect_host_tag() -> str:
+    """
+    Auto-detecte un tag identifiant le host.
+
+    Retourne un tag du style:
+    - PC_x86_64 : PC standard
+    - PI4_aarch64 : Raspberry Pi 4
+
+    Detection basee sur platform.machine() + heuristique /proc/cpuinfo pour Pi4.
+    """
+    import platform
+
+    machine = platform.machine()
+
+    # Heuristique pour Raspberry Pi 4
+    try:
+        with open("/proc/cpuinfo", "r") as f:
+            cpuinfo = f.read().lower()
+            if "raspberry pi 4" in cpuinfo or "bcm2711" in cpuinfo:
+                return f"PI4_{machine}"
+    except (FileNotFoundError, PermissionError):
+        pass
+
+    # Heuristique basee sur l'architecture
+    if machine in ("aarch64", "arm64"):
+        # Potentiellement un Pi ou un Jetson
+        try:
+            with open("/proc/device-tree/model", "r") as f:
+                model = f.read().lower()
+                if "raspberry" in model:
+                    return f"PI4_{machine}"
+                if "jetson" in model:
+                    return f"JETSON_{machine}"
+        except (FileNotFoundError, PermissionError):
+            pass
+        return f"ARM_{machine}"
+
+    # PC standard
+    return f"PC_{machine}"
 
 
 def save_results(
@@ -1108,6 +1173,269 @@ def benchmark_gpu_ort(
 
 
 # =============================================================================
+# BRANCHE CPU - ONNX Runtime CPUExecutionProvider
+# =============================================================================
+
+
+def benchmark_cpu_ort(
+    model_path: str,
+    num_classes: int,
+    dataset: str = "coco128",
+    host_tag: str | None = None,
+    cpu_threads: int | None = None,
+    cpu_execution_mode: str = "sequential",
+):
+    """
+    Benchmark sur CPU via ONNX Runtime CPUExecutionProvider.
+
+    Utilise le MEME postprocess que OAK/GPU-ORT (decode_yolo_output + apply_nms)
+    pour garantir une comparaison "fair".
+
+    Args:
+        host_tag: Tag identifiant le host (ex: PC, PI4). Auto-detecte si None.
+        cpu_threads: Nombre de threads intra-op. None = auto ORT.
+        cpu_execution_mode: "sequential" (ORT_SEQUENTIAL) ou "parallel" (ORT_PARALLEL).
+    """
+    import onnxruntime as ort
+
+    print("=" * 60)
+    print("BENCHMARK CPU - ONNX Runtime (CPUExecutionProvider)")
+    print("=" * 60)
+
+    model_name = Path(model_path).stem
+    size_mb = get_model_size_mb(model_path)
+    imgsz = parse_imgsz_from_filename(model_path)
+
+    # Auto-detect host tag si non fourni
+    if host_tag is None:
+        host_tag = detect_host_tag()
+    print(f"Host tag: {host_tag}")
+
+    print(f"Modele: {model_path}")
+    print(f"Taille: {size_mb:.2f} MB")
+    print(f"ImgSz: {imgsz}")
+
+    # Configurer SessionOptions pour CPU
+    sess_options = ort.SessionOptions()
+
+    # Niveau d'optimisation: ALL par defaut pour CPU
+    sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+    ort_level = "ALL"
+
+    # Configurer les threads CPU
+    # TODO (THREADS): inter_op_num_threads=1 est un choix de stabilite pour le benchmark.
+    #   - En mode sequentiel (ORT_SEQUENTIAL), ORT ignore de toute façon l'inter-op.
+    #   - En mode parallele (ORT_PARALLEL), inter_op_num_threads peut redevenir pertinent
+    #     selon le graphe / ORT. On privilegie ici la stabilite vs perf max en mode parallele.
+    #   - Ref: https://onnxruntime.ai/docs/api/python/api_summary.html#sessionoptions
+    if cpu_threads is not None:
+        sess_options.intra_op_num_threads = cpu_threads
+        sess_options.inter_op_num_threads = 1  # Plus stable pour benchmark
+        print(f"CPU threads: intra={cpu_threads}, inter=1")
+    else:
+        print("CPU threads: auto (ORT default)")
+
+    # Configurer le mode d'execution
+    if cpu_execution_mode == "parallel":
+        sess_options.execution_mode = ort.ExecutionMode.ORT_PARALLEL
+        exec_mode_tag = "PAR"
+    else:
+        sess_options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+        exec_mode_tag = "SEQ"
+    print(f"Execution mode: {cpu_execution_mode.upper()}")
+
+    # CPUExecutionProvider uniquement
+    providers = ["CPUExecutionProvider"]
+
+    # Creer la session ONNX Runtime
+    session = ort.InferenceSession(
+        model_path, sess_options=sess_options, providers=providers
+    )
+    actual_providers = session.get_providers()
+    providers_used = ",".join(actual_providers)
+    print(f"Provider: {actual_providers[0]}")
+
+    input_info = session.get_inputs()[0]
+    output_info = session.get_outputs()[0]
+    input_name = input_info.name
+    output_name = output_info.name
+
+    # Detecter le dtype d'entree (FP16 ou FP32)
+    input_type = input_info.type
+    if "float16" in input_type:
+        input_dtype = np.float16
+        print("Input dtype: float16")
+    else:
+        input_dtype = np.float32
+        print("Input dtype: float32")
+
+    print(f"\nChargement du dataset {dataset.upper()}...")
+    dataset_items = load_coco128_dataset(dataset)
+
+    # Warmup
+    print(f"Warmup ({WARMUP_FRAMES} frames)...")
+    for sample in dataset_items[:WARMUP_FRAMES]:
+        img = cv2.imread(sample["image_path"])
+        if img is None:
+            continue
+        img_lb, _, _ = letterbox(img, (imgsz, imgsz))
+        img_rgb = cv2.cvtColor(img_lb, cv2.COLOR_BGR2RGB)
+        img_chw = img_rgb.transpose(2, 0, 1).astype(np.float32) / 255.0
+        img_batch = np.expand_dims(img_chw, axis=0).astype(input_dtype)
+        _ = session.run([output_name], {input_name: img_batch})
+
+    print("\nInference...")
+    all_predictions = []
+    all_ground_truths = []
+    e2e_times = []
+    preprocess_times = []
+    inference_times = []
+    postprocess_times = []
+    first_frame = True
+
+    for idx, sample in enumerate(dataset_items):
+        img = cv2.imread(sample["image_path"])
+        if img is None:
+            continue
+
+        orig_h, orig_w = img.shape[:2]
+        t0 = time.perf_counter()
+
+        # Preprocess (meme que OAK/GPU)
+        img_lb, ratio, (dw, dh) = letterbox(img, (imgsz, imgsz))
+        img_rgb = cv2.cvtColor(img_lb, cv2.COLOR_BGR2RGB)
+        img_chw = img_rgb.transpose(2, 0, 1).astype(np.float32) / 255.0
+        img_batch = np.expand_dims(img_chw, axis=0).astype(input_dtype)
+
+        t1 = time.perf_counter()
+
+        # Inference ONNX Runtime CPU
+        outputs = session.run([output_name], {input_name: img_batch})
+        output_shape = outputs[0].shape
+        raw_output = outputs[0].astype(np.float32).flatten()
+
+        t2 = time.perf_counter()
+
+        if first_frame:
+            print(
+                f"  [Sanity-check] Output shape: {output_shape}, "
+                f"min={raw_output.min():.4f}, max={raw_output.max():.4f}"
+            )
+            first_frame = False
+
+        # Decode + NMS (MEME code que OAK/GPU)
+        try:
+            boxes, scores, class_ids = decode_yolo_output(
+                raw_output, num_classes, imgsz, output_shape=output_shape
+            )
+            indices, boxes_f, scores_f, class_ids_f = apply_nms(
+                boxes, scores, class_ids, CONF_EVAL, NMS_IOU, MAX_DET
+            )
+            predictions = boxes_to_predictions(
+                indices, boxes_f, scores_f, class_ids_f, ratio, dw, dh, orig_w, orig_h
+            )
+        except ValueError as e:
+            if idx == 0:
+                print(f"  [ERREUR DECODE] {e}")
+            predictions = []
+
+        t3 = time.perf_counter()
+
+        e2e_times.append((t3 - t0) * 1000)
+        preprocess_times.append((t1 - t0) * 1000)
+        inference_times.append((t2 - t1) * 1000)
+        postprocess_times.append((t3 - t2) * 1000)
+
+        all_predictions.append(predictions)
+
+        gt_list = []
+        for gt in sample["gt_boxes"]:
+            x_center, y_center, w, h = (
+                gt["x_center"],
+                gt["y_center"],
+                gt["width"],
+                gt["height"],
+            )
+            gt_list.append(
+                {
+                    "box": [
+                        x_center - w / 2,
+                        y_center - h / 2,
+                        x_center + w / 2,
+                        y_center + h / 2,
+                    ],
+                    "class_id": gt["class_id"],
+                }
+            )
+        all_ground_truths.append(gt_list)
+
+        if (idx + 1) % 20 == 0:
+            print(f"  {idx + 1}/{len(dataset_items)} images...")
+
+    print("\nCalcul des metriques...")
+    metrics = compute_map50_prf1(
+        all_predictions, all_ground_truths, conf_op=CONF_OP, iou_thr=MATCH_IOU
+    )
+
+    # Compute extended timing stats
+    timing = compute_timing_stats(
+        e2e_times, preprocess_times, inference_times, postprocess_times
+    )
+
+    print("\n" + "-" * 40)
+    print("RESULTATS CPU (ONNX Runtime)")
+    print("-" * 40)
+    print(f"Host                : {host_tag}")
+    print(f"Taille modele       : {size_mb:.2f} MB")
+    print(f"ImgSz               : {imgsz}")
+    print(f"Temps E2E moyen     : {timing['e2e_mean']:.2f} ms")
+    print(f"  Preprocess        : {timing['preprocess_ms']:.2f} ms")
+    print(f"  Inference         : {timing['inference_ms']:.2f} ms")
+    print(f"  Postprocess       : {timing['postprocess_ms']:.2f} ms")
+    print(
+        f"Latence p50/p90/p99 : {timing['latency_p50']:.2f} / {timing['latency_p90']:.2f} / {timing['latency_p99']:.2f} ms"
+    )
+    print(f"FPS                 : {timing['fps']:.1f}")
+    print(f"mAP50               : {metrics['map50']:.4f}")
+    print(f"Precision           : {metrics['precision']:.4f}")
+    print(f"Recall              : {metrics['recall']:.4f}")
+    print(f"F1-Score            : {metrics['f1']:.4f}")
+
+    # Hardware tag: CPU_ORT_{host_tag}_{exec_mode}
+    hardware = f"CPU_ORT_{host_tag}_{exec_mode_tag}"
+
+    # Thread config pour le CSV
+    thread_config = f"intra={cpu_threads or 'auto'},inter=1"
+
+    save_results(
+        hardware=hardware,
+        model_name=model_name,
+        size_mb=size_mb,
+        imgsz=imgsz,
+        e2e_time_ms=timing["e2e_mean"],
+        device_time_ms=timing["inference_ms"],
+        map50=metrics["map50"],
+        precision=metrics["precision"],
+        recall=metrics["recall"],
+        f1=metrics["f1"],
+        dataset=dataset,
+        backend="onnxruntime-cpu",
+        # Extended timing (Phase 3)
+        latency_p50=timing["latency_p50"],
+        latency_p90=timing["latency_p90"],
+        latency_p95=timing["latency_p95"],
+        latency_p99=timing["latency_p99"],
+        preprocess_ms=timing["preprocess_ms"],
+        inference_ms=timing["inference_ms"],
+        postprocess_ms=timing["postprocess_ms"],
+        fps=timing["fps"],
+        # ORT config tracking
+        ort_level_requested=f"{ort_level}_{exec_mode_tag}_{thread_config}",
+        providers_used=providers_used,
+    )
+
+
+# =============================================================================
 # BRANCHE GPU - Ultralytics (pour compatibilite .pt)
 # =============================================================================
 
@@ -1302,8 +1630,18 @@ def benchmark_gpu_ultralytics(
 # =============================================================================
 
 
-def benchmark_oak(model_path: str, num_classes: int, dataset: str = "coco128"):
-    """Benchmark sur OAK-D (Myriad X VPU)."""
+def benchmark_oak(
+    model_path: str,
+    num_classes: int,
+    dataset: str = "coco128",
+    host_tag: str | None = None,
+):
+    """
+    Benchmark sur OAK-D (Myriad X VPU).
+
+    Args:
+        host_tag: Tag identifiant le host (ex: PC, PI4). Auto-detecte si None.
+    """
 
     import depthai as dai
 
@@ -1314,6 +1652,11 @@ def benchmark_oak(model_path: str, num_classes: int, dataset: str = "coco128"):
     model_name = Path(model_path).stem
     size_mb = get_model_size_mb(model_path)
     imgsz = parse_imgsz_from_filename(model_path)
+
+    # Auto-detect host tag si non fourni
+    if host_tag is None:
+        host_tag = detect_host_tag()
+    print(f"Host tag: {host_tag}")
 
     print(f"Modele: {model_path}")
     print(f"Taille: {size_mb:.2f} MB")
@@ -1349,11 +1692,27 @@ def benchmark_oak(model_path: str, num_classes: int, dataset: str = "coco128"):
     postprocess_times = []
 
     with dai.Device(pipeline) as device:
-        # q_in = device.getInputQueue("input")
-        # q_out = device.getOutputQueue("nn", maxSize=1, blocking=True)
-
+        # TODO (OAK_QUEUE): blocking=False + maxSize=1 = risque de drop/variabilite.
+        #   Pour un benchmark latence, il serait plus "propre" d'eviter toute logique de
+        #   drop/backpressure implicite. Options:
+        #   - Mettre blocking=True (ou trySend() + check retour si dispo)
+        #   - Augmenter maxSize > 1 pour eviter les drops
         q_in = device.getInputQueue(name="input", maxSize=1, blocking=False)
         q_out = device.getOutputQueue(name="nn", maxSize=1, blocking=True)
+
+        # TODO (PREPROCESS_FAIRNESS): OAK vs GPU/CPU preprocessing mismatch!
+        #   GPU/CPU: BGR->RGB, normalize /255, CHW, float16/float32
+        #   OAK: BGR888p uint8 (pas de RGB, pas de /255)
+        #
+        #   Si le BLOB n'integre pas le meme pretraitement que l'ONNX, on risque
+        #   d'avoir des mAP/PRF1 non comparables (drop cote OAK) meme si le postprocess
+        #   est "aligne".
+        #
+        #   Actions possibles:
+        #   1. Verifier ce que le blob attend (U8 vs FP16, RGB vs BGR, normalisation)
+        #   2. Ajouter le preprocess dans le graphe ONNX avant compilation en BLOB
+        #   3. Preprocesser cote host avant send() (envoyer NNData/FP16 si necessaire)
+        #   4. Utiliser un noeud ImageManip cote device pour rester "propre"
 
         # Warmup
         print(f"Warmup ({WARMUP_FRAMES} frames)...")
@@ -1492,8 +1851,11 @@ def benchmark_oak(model_path: str, num_classes: int, dataset: str = "coco128"):
     print(f"Recall              : {metrics['recall']:.4f}")
     print(f"F1-Score            : {metrics['f1']:.4f}")
 
+    # Hardware tag: OAK_MyriadX_HOST_{host_tag}
+    hardware = f"OAK_MyriadX_HOST_{host_tag}"
+
     save_results(
-        hardware="OAK_MyriadX",
+        hardware=hardware,
         model_name=model_name,
         size_mb=size_mb,
         imgsz=imgsz,
@@ -1987,14 +2349,14 @@ def _benchmark_orin_ultralytics(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Benchmark d'un modele YOLO sur GPU, OAK-D ou Jetson Orin"
+        description="Benchmark d'un modele YOLO sur GPU, CPU, OAK-D ou Jetson Orin"
     )
     parser.add_argument(
         "--target",
         type=str,
         required=True,
-        choices=["4070", "oak", "orin"],
-        help="Cible hardware: '4070' (GPU), 'oak' (Myriad X), 'orin' (Jetson)",
+        choices=["4070", "cpu", "oak", "orin"],
+        help="Cible hardware: '4070' (GPU), 'cpu' (ONNX Runtime CPU), 'oak' (Myriad X), 'orin' (Jetson)",
     )
     parser.add_argument(
         "--model",
@@ -2029,6 +2391,25 @@ def main():
         choices=["disable", "basic", "extended", "all"],
         help="Niveau d'optimisation ORT au chargement (defaut: auto-detect, DISABLE pour _ortopt_*)",
     )
+    parser.add_argument(
+        "--host-tag",
+        type=str,
+        default=None,
+        help="Tag identifiant le host (ex: PC, PI4). Auto-detecte si non fourni.",
+    )
+    parser.add_argument(
+        "--cpu-threads",
+        type=int,
+        default=None,
+        help="Nombre de threads intra-op pour inference CPU (defaut: auto)",
+    )
+    parser.add_argument(
+        "--cpu-execution-mode",
+        type=str,
+        default="sequential",
+        choices=["sequential", "parallel"],
+        help="Mode d'execution ONNX Runtime CPU: sequential ou parallel (defaut: sequential)",
+    )
 
     args = parser.parse_args()
 
@@ -2047,6 +2428,8 @@ def main():
     ext = Path(model_path).suffix.lower()
     if args.target == "4070" and ext not in [".pt", ".onnx"]:
         print(f"Attention: Pour GPU, .pt ou .onnx attendu (recu: {ext})")
+    elif args.target == "cpu" and ext != ".onnx":
+        print(f"Attention: Pour CPU, .onnx attendu (recu: {ext})")
     elif args.target == "oak" and ext != ".blob":
         print(f"Attention: Pour OAK, .blob attendu (recu: {ext})")
     elif args.target == "orin" and ext != ".engine":
@@ -2063,8 +2446,22 @@ def main():
             )
         else:
             benchmark_gpu_ultralytics(model_path, args.num_classes, args.dataset)
+    elif args.target == "cpu":
+        benchmark_cpu_ort(
+            model_path,
+            args.num_classes,
+            args.dataset,
+            host_tag=args.host_tag,
+            cpu_threads=args.cpu_threads,
+            cpu_execution_mode=args.cpu_execution_mode,
+        )
     elif args.target == "oak":
-        benchmark_oak(model_path, args.num_classes, args.dataset)
+        benchmark_oak(
+            model_path,
+            args.num_classes,
+            args.dataset,
+            host_tag=args.host_tag,
+        )
     elif args.target == "orin":
         benchmark_orin(model_path, args.num_classes, args.dataset)
 
