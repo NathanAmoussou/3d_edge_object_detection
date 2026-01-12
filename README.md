@@ -25,17 +25,30 @@
 - Consommation instantanée (puissance en Watts)
 - Énergie par inférence (en Joules) : $Joules = Watts \times Temps(secondes)$
 - Taille du modèle (*storage footprint*), taille fichier et/ou nombre de paramètres du modèle
+	- Fait
 - Pic mémoire (*peak RAM usage*), quantité max de RAM utilisée
 - Température et *throttling*
 - Taux d'utilisation du CPU/GPU/...
 ### Métriques *software* (côté IA)
 - mAP@50 (*mean average precision*), vérifie si la boîte englobante (*bounding box*) chevauche au moins à 50% la vérité terrain
-- mAP@50-95
+	- Fait
 - Precision / Recall / F1
+	- Fait
 - Matrice de confusion (le modèle confond quels objets avec quels objets)
-- Temps d'inférence (temps pur que met le réseau de neurones à calculer)
-- Latence de bout en bout : $Latence = T_{pre-process} + T_{transfert} + T_{inference} + T_{post-process}$
+- E2E
+	- Fait
+- Device Time
+	- Fait
+- Preprocess
+	- Fait
+- Inference
+	- Fait
+- Postprocess
+	- Fait
+- p50/p90/p95/p99
+	- Fait
 - FPS (*throughput*)
+	- Fait
 ### Métriques combinées
 - FPS / Watt (Efficacité), combien d'images on traite pour 1 Watt
 - Densité de performance, FPS / Prix du matériel ($)
