@@ -4,6 +4,7 @@ Benchmark d'un modele YOLO sur GPU, CPU, OAK-D ou Jetson Orin.
 Usage:
     # GPU (RTX 4070)
     python scripts/benchmark.py --target 4070 --model models/variants/yolo11n_640_fp16.onnx
+    python scripts/benchmark.py --target 4070
 
     # CPU (PC ou Raspberry Pi 4)
     python scripts/benchmark.py --target cpu --model models/variants/yolo11n_640_fp32.onnx --host-tag PC --cpu-threads 8
@@ -113,6 +114,11 @@ from ultralytics.utils.metrics import ap_per_class
 
 ROOT_DIR = Path(__file__).parent.parent.resolve()
 RESULTS_FILE = ROOT_DIR / "benchmark_results.csv"
+DEFAULT_VARIANTS_DIR = ROOT_DIR / "models" / "variants"
+DEFAULT_SWEEP_SCALES = ["m", "s", "n"]
+DEFAULT_SWEEP_RESOLUTIONS = [640, 512, 416, 320, 256]
+DEFAULT_SWEEP_QUANTS = ["fp32", "fp16"]
+DEFAULT_SWEEP_ORT_LEVELS = ["all", "basic", "disable"]
 
 # --- Seuils de confiance ---
 CONF_EVAL = 0.001  # seuil pour la courbe PR complete (mAP)
@@ -224,6 +230,71 @@ def compute_timing_stats(
         else 0.0,
         "fps": fps,
     }
+
+
+def get_default_variant_paths(variants_dir: Path) -> list[Path]:
+    paths = []
+    for scale in DEFAULT_SWEEP_SCALES:
+        for imgsz in DEFAULT_SWEEP_RESOLUTIONS:
+            for quant in DEFAULT_SWEEP_QUANTS:
+                name = f"yolo11{scale}_{imgsz}_{quant}.onnx"
+                paths.append(variants_dir / name)
+    return paths
+
+
+def benchmark_gpu_ort_sweep(
+    variants_dir: Path,
+    num_classes: int,
+    dataset: str,
+    monitor_enabled: bool,
+    monitor_interval_ms: int,
+    monitor_gpu_index: int,
+) -> int:
+    if not variants_dir.exists():
+        print(f"Erreur: Dossier variantes introuvable: {variants_dir}")
+        return 1
+
+    missing = 0
+    total_runs = 0
+    print("=" * 60)
+    print("BENCHMARK GPU - ORT SWEEP")
+    print("=" * 60)
+    print(f"Variantes : {variants_dir}")
+    print(
+        f"Models    : {', '.join([f'yolo11{s}' for s in DEFAULT_SWEEP_SCALES])}"
+    )
+    print(f"Resolutions: {', '.join(map(str, DEFAULT_SWEEP_RESOLUTIONS))}")
+    print(f"Quantifs  : {', '.join(DEFAULT_SWEEP_QUANTS)}")
+    print(f"ORT levels: {', '.join(DEFAULT_SWEEP_ORT_LEVELS)}")
+
+    for model_path in get_default_variant_paths(variants_dir):
+        if not model_path.exists():
+            print(f"[SKIP] {model_path} (introuvable)")
+            missing += 1
+            continue
+        for ort_level in DEFAULT_SWEEP_ORT_LEVELS:
+            total_runs += 1
+            print("\n" + "-" * 40)
+            print(f"[SWEEP] {model_path.name} | ORT={ort_level.upper()}")
+            print("-" * 40)
+            benchmark_gpu_ort(
+                str(model_path),
+                num_classes,
+                dataset,
+                ort_opt_level=ort_level,
+                monitor_enabled=monitor_enabled,
+                monitor_interval_ms=monitor_interval_ms,
+                monitor_gpu_index=monitor_gpu_index,
+            )
+
+    print("\n" + "=" * 60)
+    print("SWEEP TERMINE")
+    print("=" * 60)
+    print(f"Runs       : {total_runs}")
+    if missing:
+        print(f"Manquants  : {missing}")
+
+    return 0 if total_runs > 0 else 1
 
 
 class ResourceMonitor:
@@ -2887,7 +2958,7 @@ def main():
     parser.add_argument(
         "--model",
         type=str,
-        required=True,
+        default=None,
         help="Chemin vers le modele (.onnx pour GPU, .blob pour OAK, .engine pour Orin)",
     )
     parser.add_argument(
@@ -2964,7 +3035,29 @@ def main():
 
     args = parser.parse_args()
 
+    if args.target != "4070" and not args.model:
+        parser.error("--model est requis pour cette cible.")
+
+    if args.target == "4070" and not args.model:
+        if args.backend != "ort":
+            print(
+                "[Warning] Sweep GPU utilise ORT par defaut; --backend ultralytics ignore."
+            )
+        if args.ort_opt_level is not None:
+            print("[Warning] Sweep GPU ignore --ort-opt-level (all/basic/disable).")
+        return benchmark_gpu_ort_sweep(
+            DEFAULT_VARIANTS_DIR,
+            args.num_classes,
+            args.dataset,
+            monitor_enabled=args.monitor,
+            monitor_interval_ms=args.monitor_interval_ms,
+            monitor_gpu_index=args.monitor_gpu,
+        )
+
     # Resoudre le chemin
+    if not args.model:
+        print("Erreur: --model est requis pour ce mode.")
+        return 1
     model_path = Path(args.model)
 
     # Pour OAK avec --shaves: construire le chemin du blob automatiquement

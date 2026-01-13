@@ -4,12 +4,17 @@ Compile un modele ONNX pour une cible hardware specifique.
 Le workflow "fair" part d'un ONNX commun (genere par generate_variants.py)
 et compile vers le format natif de chaque hardware.
 
-Usage:
-    python compile.py --target 4070 --model models/variants/yolo11n_640_fp16.onnx
-    python compile.py --target oak --model models/variants/yolo11n_640_fp16.onnx
-    python compile.py --target oak --model models/variants/yolo11n_640_fp16.onnx --shaves 8
-    python compile.py --target oak --model models/variants/yolo11n_640_fp16.onnx --shaves 4 5 6 7 8
-    python compile.py --target orin --model models/variants/yolo11n_640_fp16.onnx
+Main usage:
+    To generate all 75 yolo11{m,s,n}_{640,512,416,320,256}_fp16_{4,5,6,7,8}shave.blob variants for OAK:
+        python scripts/compile.py --target oak
+
+Options (debug only)::
+    python scripts/compile.py --target 4070 --model models/variants/yolo11n_640_fp16.onnx
+    python scripts/compile.py --target oak --model models/variants/yolo11n_640_fp16.onnx
+    python scripts/compile.py --target oak --model models/variants/yolo11n_640_fp16.onnx --shaves 8
+    python scripts/compile.py --target oak --model models/variants/yolo11n_640_fp16.onnx --shaves 4 5 6 7 8
+    python scripts/compile.py --target oak
+    python scripts/compile.py --target orin --model models/variants/yolo11n_640_fp16.onnx
 
 Targets:
     - 4070/cpu: Retourne l'ONNX tel quel (inference via ONNX Runtime)
@@ -20,14 +25,13 @@ OAK Shaves:
     Le nombre de SHAVE cores est un parametre de compilation (pas modifiable a runtime).
     RVC2 a 16 SHAVEs. Luxonis recommande 8 shaves avec 2 NN threads.
     Generer plusieurs blobs pour benchmark: --shaves 4 5 6 7 8
+    Sans --model (target oak), compile par defaut toutes les variantes fp16
+    yolo11{m,s,n}_{640,512,416,320,256} avec shaves 4-8.
 
 TODO (Phase 4): Metadata preservation
     - Copier/enrichir le .json du modele source vers l'artefact compile (.blob, .engine)
     - Ajouter les infos de compilation: target, flags (--fp16, --int8), timestamp
     - Preserver la lineage: parent_onnx, transform_type, experiment_id
-
-TODO Ajoute fonction qui swip génère toutes les variantes pour une cible (pour Oak par exemple,
-     toutes les inputs, quantization et shaves en une commande et dans le bon dossier cible).
 """
 
 import argparse
@@ -37,6 +41,13 @@ from pathlib import Path
 
 # --- Configuration ---
 ROOT_DIR = Path(__file__).parent.parent.resolve()
+DEFAULT_VARIANTS_DIR = ROOT_DIR / "models" / "variants"
+DEFAULT_OAK_OUTPUT_DIR = ROOT_DIR / "models" / "oak"
+DEFAULT_ORIN_OUTPUT_DIR = ROOT_DIR / "models" / "orin"
+DEFAULT_OAK_SCALES = ["m", "s", "n"]
+DEFAULT_OAK_RESOLUTIONS = [640, 512, 416, 320, 256]
+DEFAULT_OAK_QUANT = "fp16"
+DEFAULT_OAK_SHAVES = [4, 5, 6, 7, 8]
 
 # Domaines ONNX internes a ORT (non portables vers TRT/OpenVINO)
 ORT_INTERNAL_DOMAINS = [
@@ -276,6 +287,58 @@ def compile_for_oak_sweep(
     return generated
 
 
+def get_default_oak_variants(variants_dir: Path) -> list[Path]:
+    paths = []
+    for scale in DEFAULT_OAK_SCALES:
+        for imgsz in DEFAULT_OAK_RESOLUTIONS:
+            name = f"yolo11{scale}_{imgsz}_{DEFAULT_OAK_QUANT}.onnx"
+            paths.append(variants_dir / name)
+    return paths
+
+
+def compile_oak_default_sweep(
+    output_dir: str,
+    shaves_list: list[int],
+    skip_existing: bool = False,
+) -> list[str]:
+    variants_dir = DEFAULT_VARIANTS_DIR
+    if not variants_dir.exists():
+        print(f"Erreur: Dossier variantes introuvable: {variants_dir}")
+        return []
+
+    generated = []
+    missing = 0
+    print("=" * 60)
+    print("COMPILATION OAK-D (SWEEP PAR DEFAUT)")
+    print("=" * 60)
+    print(f"Variantes : {variants_dir}")
+    print(f"Shaves    : {shaves_list}")
+    print(f"Sortie    : {output_dir}")
+
+    for model_path in get_default_oak_variants(variants_dir):
+        if not model_path.exists():
+            print(f"[SKIP] {model_path} (introuvable)")
+            missing += 1
+            continue
+        generated.extend(
+            compile_for_oak_sweep(
+                str(model_path),
+                output_dir,
+                shaves_list=shaves_list,
+                skip_existing=skip_existing,
+            )
+        )
+
+    print("\n" + "=" * 60)
+    print("SWEEP PAR DEFAUT TERMINE")
+    print("=" * 60)
+    print(f"Blobs generes : {len(generated)}")
+    if missing:
+        print(f"Manquants     : {missing}")
+
+    return generated
+
+
 def compile_for_orin(
     onnx_path: str,
     output_dir: str,
@@ -440,13 +503,22 @@ def main():
         help="Cible: '4070'/'cpu' (ONNX Runtime), 'oak' (blob), 'orin' (TensorRT)",
     )
     parser.add_argument(
-        "--model", type=str, required=True, help="Chemin vers le modele ONNX"
+        "--model",
+        type=str,
+        default=None,
+        help=(
+            "Chemin vers le modele ONNX (requis pour 4070/cpu/orin, "
+            "optionnel pour oak)"
+        ),
     )
     parser.add_argument(
         "--output",
         type=str,
         default=None,
-        help="Dossier de sortie (defaut: meme dossier que le modele)",
+        help=(
+            "Dossier de sortie (defaut: models/oak pour oak, models/orin pour "
+            "orin, sinon dossier du modele)"
+        ),
     )
     parser.add_argument(
         "--fp32", action="store_true", help="Forcer FP32 pour Orin (defaut: FP16)"
@@ -461,12 +533,12 @@ def main():
         "--shaves",
         type=int,
         nargs="+",
-        default=[6],
+        default=None,
         choices=range(1, 17),
         metavar="[1-16]",
         help=(
             "SHAVEs OAK. Accepte une liste: --shaves 4 5 6 7 8 "
-            "(defaut: 6)."
+            "(defaut: 6, ou 4-8 si --target oak sans --model)."
         ),
     )
     parser.add_argument(
@@ -476,6 +548,29 @@ def main():
     )
 
     args = parser.parse_args()
+
+    if args.target != "oak" and not args.model:
+        parser.error("--model est requis pour cette cible.")
+
+    shaves_list = args.shaves
+    if shaves_list is None:
+        if args.target == "oak" and not args.model:
+            shaves_list = DEFAULT_OAK_SHAVES
+        else:
+            shaves_list = [6]
+
+    if args.target == "oak" and not args.model:
+        output_dir = (
+            str(Path(args.output).resolve())
+            if args.output
+            else str(DEFAULT_OAK_OUTPUT_DIR)
+        )
+        generated = compile_oak_default_sweep(
+            output_dir=output_dir,
+            shaves_list=shaves_list,
+            skip_existing=args.skip_existing,
+        )
+        return 0 if generated else 1
 
     # Resoudre le chemin du modele
     model_path = Path(args.model)
@@ -491,7 +586,12 @@ def main():
     # Dossier de sortie
     output_dir = args.output
     if output_dir is None:
-        output_dir = str(Path(model_path).parent)
+        if args.target == "oak":
+            output_dir = str(DEFAULT_OAK_OUTPUT_DIR)
+        elif args.target == "orin":
+            output_dir = str(DEFAULT_ORIN_OUTPUT_DIR)
+        else:
+            output_dir = str(Path(model_path).parent)
     else:
         output_dir = str(Path(output_dir).resolve())
 
@@ -499,20 +599,20 @@ def main():
     if args.target in ["4070", "cpu"]:
         output_path = compile_for_gpu(model_path, output_dir)
     elif args.target == "oak":
-        if len(args.shaves) == 1:
+        if len(shaves_list) == 1:
             output_path = compile_for_oak(
-                model_path, output_dir, shaves=args.shaves[0]
+                model_path, output_dir, shaves=shaves_list[0]
             )
         else:
             compile_for_oak_sweep(
                 model_path,
                 output_dir,
-                shaves_list=args.shaves,
+                shaves_list=shaves_list,
                 skip_existing=args.skip_existing,
             )
             output_path = str(
                 Path(output_dir)
-                / f"{Path(model_path).stem}_{args.shaves[-1]}shave.blob"
+                / f"{Path(model_path).stem}_{shaves_list[-1]}shave.blob"
             )
     elif args.target == "orin":
         output_path = compile_for_orin(
