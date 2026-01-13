@@ -5,8 +5,10 @@ Le workflow "fair" part d'un ONNX commun (genere par generate_variants.py)
 et compile vers le format natif de chaque hardware.
 
 Main usage:
-    To generate all 75 yolo11{m,s,n}_{640,512,416,320,256}_fp16_{4,5,6,7,8}shave.blob variants for OAK:
+    To generate all yolo11{m,s,n}_{640,512,416,320,256}_fp16_{4,5,6,7,8}shave.blob variants for OAK:
         python scripts/compile.py --target oak
+    To generate all Orin TRT variants (m/s/n, 640-256, fp32/fp16, builder 3/4/5, sparsity on/off):
+        python scripts/compile.py --target orin_trt
 
 Options (debug only)::
     python scripts/compile.py --target 4070 --model models/variants/yolo11n_640_fp16.onnx
@@ -15,11 +17,13 @@ Options (debug only)::
     python scripts/compile.py --target oak --model models/variants/yolo11n_640_fp16.onnx --shaves 4 5 6 7 8
     python scripts/compile.py --target oak
     python scripts/compile.py --target orin --model models/variants/yolo11n_640_fp16.onnx
+    python scripts/compile.py --target orin_trt
 
 Targets:
     - 4070/cpu: Retourne l'ONNX tel quel (inference via ONNX Runtime)
     - oak: Compile ONNX -> BLOB (Myriad X, FP16, shaves configurable)
     - orin: Compile ONNX -> ENGINE (TensorRT, sur Jetson)
+    - orin_trt: Sweep TensorRT sur variants m/s/n, 640-256, fp32/fp16, builder 3/4/5, sparsity on/off
 
 OAK Shaves:
     Le nombre de SHAVE cores est un parametre de compilation (pas modifiable a runtime).
@@ -48,6 +52,12 @@ DEFAULT_OAK_SCALES = ["m", "s", "n"]
 DEFAULT_OAK_RESOLUTIONS = [640, 512, 416, 320, 256]
 DEFAULT_OAK_QUANT = "fp16"
 DEFAULT_OAK_SHAVES = [4, 5, 6, 7, 8]
+DEFAULT_ORIN_TRT_TRANSFORMED_DIR = ROOT_DIR / "models" / "transformed"
+DEFAULT_ORIN_TRT_SCALES = ["m", "s", "n"]
+DEFAULT_ORIN_TRT_RESOLUTIONS = [640, 512, 416, 320, 256]
+DEFAULT_ORIN_TRT_PRECS = ["fp32", "fp16"]
+DEFAULT_ORIN_TRT_BUILDER_LEVELS = [3, 4, 5]
+DEFAULT_ORIN_TRT_SPARSITY = [False, True]
 
 # Domaines ONNX internes a ORT (non portables vers TRT/OpenVINO)
 ORT_INTERNAL_DOMAINS = [
@@ -287,6 +297,88 @@ def compile_for_oak_sweep(
     return generated
 
 
+def find_int8_variant(
+    scale: str, imgsz: int, transformed_dir: Path
+) -> Path | None:
+    pattern = f"yolo11{scale}_{imgsz}_fp32_int8_qdq_*.onnx"
+    matches = sorted(transformed_dir.glob(pattern))
+    if not matches:
+        return None
+    for match in matches:
+        if "s8s8" in match.name:
+            return match
+    return matches[0]
+
+
+def compile_orin_trt_sweep(
+    output_dir: str,
+    skip_existing: bool = False,
+) -> list[str]:
+    variants_dir = DEFAULT_VARIANTS_DIR
+    generated = []
+    missing = 0
+
+    print("=" * 60)
+    print("COMPILATION ORIN TRT (SWEEP PAR DEFAUT)")
+    print("=" * 60)
+    print(f"Variants   : {variants_dir}")
+    print(f"Scales     : {DEFAULT_ORIN_TRT_SCALES}")
+    print(f"Resolutions: {DEFAULT_ORIN_TRT_RESOLUTIONS}")
+    print(f"Precisions : {DEFAULT_ORIN_TRT_PRECS}")
+    print(f"Builder    : {DEFAULT_ORIN_TRT_BUILDER_LEVELS}")
+    print(f"Sparsity   : {DEFAULT_ORIN_TRT_SPARSITY}")
+    print(f"Output     : {output_dir}")
+
+    for scale in DEFAULT_ORIN_TRT_SCALES:
+        for imgsz in DEFAULT_ORIN_TRT_RESOLUTIONS:
+            for prec in DEFAULT_ORIN_TRT_PRECS:
+                if prec == "int8":
+                    model_path = find_int8_variant(scale, imgsz, transformed_dir)
+                else:
+                    name = f"yolo11{scale}_{imgsz}_{prec}.onnx"
+                    model_path = variants_dir / name
+
+                if not model_path or not model_path.exists():
+                    missing += 1
+                    if prec == "int8":
+                        print(
+                            f"[SKIP] int8 introuvable: yolo11{scale}_{imgsz}_fp32_int8_qdq_*.onnx"
+                        )
+                    else:
+                        print(f"[SKIP] {model_path} (introuvable)")
+                    continue
+
+                for level in DEFAULT_ORIN_TRT_BUILDER_LEVELS:
+                    for sparsity in DEFAULT_ORIN_TRT_SPARSITY:
+                        suffix = f"_trt_b{level}_sp{int(sparsity)}"
+                        expected = (
+                            Path(output_dir) / f"{model_path.stem}{suffix}.engine"
+                        )
+                        if skip_existing and expected.exists():
+                            print(f"[SKIP] {expected.name} (existe deja)")
+                            generated.append(str(expected))
+                            continue
+
+                        out = compile_for_orin(
+                            str(model_path),
+                            output_dir,
+                            fp16=prec != "fp32",
+                            builder_opt_level=level,
+                            sparsity=sparsity,
+                            engine_suffix=suffix,
+                        )
+                        generated.append(out)
+
+    print("\n" + "=" * 60)
+    print("SWEEP ORIN TRT TERMINE")
+    print("=" * 60)
+    print(f"Engines generes: {len(generated)}")
+    if missing:
+        print(f"Manquants     : {missing}")
+
+    return generated
+
+
 def get_default_oak_variants(variants_dir: Path) -> list[Path]:
     paths = []
     for scale in DEFAULT_OAK_SCALES:
@@ -344,6 +436,9 @@ def compile_for_orin(
     output_dir: str,
     fp16: bool = True,
     workspace_mb: int = 4096,
+    builder_opt_level: int | None = None,
+    sparsity: bool = False,
+    engine_suffix: str | None = None,
 ) -> str:
     """
     Compile ONNX -> ENGINE pour Jetson Orin (TensorRT).
@@ -360,6 +455,9 @@ def compile_for_orin(
         fp16: Utiliser FP16 (recommande pour Orin)
         workspace_mb: Taille du workspace TensorRT en MB (defaut: 4096)
                       Reduire si RAM limitee (ex: 2048 pour Orin Nano 4GB)
+        builder_opt_level: Niveau d'optimisation builder TensorRT (0-5)
+        sparsity: Activer la sparsity TensorRT si disponible
+        engine_suffix: Suffixe a ajouter au nom de l'engine/log
     """
     print("=" * 60)
     print("COMPILATION ORIN (ONNX -> TensorRT ENGINE)")
@@ -410,8 +508,9 @@ def compile_for_orin(
     print(f"Workspace: {workspace_mb} MB")
 
     # Nom du fichier engine et log
-    engine_name = onnx_path.stem + ".engine"
-    log_name = onnx_path.stem + ".trtexec.log"
+    suffix = engine_suffix or ""
+    engine_name = onnx_path.stem + suffix + ".engine"
+    log_name = onnx_path.stem + suffix + ".trtexec.log"
     os.makedirs(output_dir, exist_ok=True)
     engine_path = Path(output_dir) / engine_name
     log_path = Path(output_dir) / log_name
@@ -438,6 +537,12 @@ def compile_for_orin(
         cmd.append("--fp16")  # Fallback FP16 pour layers non-INT8
     elif fp16:
         cmd.append("--fp16")
+
+    if builder_opt_level is not None:
+        cmd.append(f"--builderOptimizationLevel={builder_opt_level}")
+
+    if sparsity:
+        cmd.append("--sparsity=enable")
 
     # Pas de NMS integre (on veut le meme postprocess que GPU/OAK)
     # Le modele ONNX a deja nms=False depuis generate_variants.py
@@ -499,8 +604,11 @@ def main():
         "--target",
         type=str,
         required=True,
-        choices=["4070", "cpu", "oak", "orin"],
-        help="Cible: '4070'/'cpu' (ONNX Runtime), 'oak' (blob), 'orin' (TensorRT)",
+        choices=["4070", "cpu", "oak", "orin", "orin_trt"],
+        help=(
+            "Cible: '4070'/'cpu' (ONNX Runtime), 'oak' (blob), "
+            "'orin' (TensorRT), 'orin_trt' (sweep TensorRT)"
+        ),
     )
     parser.add_argument(
         "--model",
@@ -508,7 +616,7 @@ def main():
         default=None,
         help=(
             "Chemin vers le modele ONNX (requis pour 4070/cpu/orin, "
-            "optionnel pour oak)"
+            "optionnel pour oak/orin_trt)"
         ),
     )
     parser.add_argument(
@@ -517,7 +625,7 @@ def main():
         default=None,
         help=(
             "Dossier de sortie (defaut: models/oak pour oak, models/orin pour "
-            "orin, sinon dossier du modele)"
+            "orin/orin_trt, sinon dossier du modele)"
         ),
     )
     parser.add_argument(
@@ -549,7 +657,7 @@ def main():
 
     args = parser.parse_args()
 
-    if args.target != "oak" and not args.model:
+    if args.target not in ["oak", "orin_trt"] and not args.model:
         parser.error("--model est requis pour cette cible.")
 
     shaves_list = args.shaves
@@ -568,6 +676,20 @@ def main():
         generated = compile_oak_default_sweep(
             output_dir=output_dir,
             shaves_list=shaves_list,
+            skip_existing=args.skip_existing,
+        )
+        return 0 if generated else 1
+
+    if args.target == "orin_trt":
+        if args.model:
+            print("[Warning] --model ignore en mode orin_trt (sweep complet).")
+        output_dir = (
+            str(Path(args.output).resolve())
+            if args.output
+            else str(DEFAULT_ORIN_OUTPUT_DIR)
+        )
+        generated = compile_orin_trt_sweep(
+            output_dir=output_dir,
             skip_existing=args.skip_existing,
         )
         return 0 if generated else 1

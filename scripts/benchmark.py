@@ -13,12 +13,16 @@ Usage:
     # OAK-D (Myriad X VPU)
     python scripts/benchmark.py --target oak --model models/oak/yolo11n_640_fp16_6shave.blob --host-tag PC
     python scripts/benchmark.py --target oak --model models/oak/yolo11n_640_fp16 --shaves 8 --host-tag PI4
+    python scripts/benchmark.py --target oak
 
     # Jetson Orin
     python scripts/benchmark.py --target orin --model models/orin/yolo11n_640_fp16.engine --num-classes 80
+    python scripts/benchmark.py --target orin
+    python scripts/benchmark.py --target orin_ort
+    python scripts/benchmark.py --target orin_trt
 
 Options:
-    --target 4070|cpu|oak|orin : Cible hardware
+    --target 4070|cpu|oak|orin|orin_ort|orin_trt : Cible hardware
     --model PATH               : Chemin vers le modele (.onnx pour GPU/CPU, .blob pour OAK, .engine pour Orin)
     --num-classes N            : Nombre de classes du modele (defaut: 80 pour COCO)
     --dataset coco128|coco     : Dataset a utiliser (defaut: coco128)
@@ -28,6 +32,7 @@ Options:
     --cpu-execution-mode       : Mode d'execution ORT CPU: sequential ou parallel (defaut: sequential)
     --shaves N                 : Nombre de shaves OAK (4-8) (auto-complete le nom du blob: *_{N}shave.blob)
     --monitor                  : Activer le monitoring CPU/RAM/GPU (psutil + nvidia-smi/tegrastats)
+    --no-monitor               : Desactiver le monitoring (defaut auto pour 4070/oak)
     --monitor-interval-ms N    : Intervalle d'echantillonnage (defaut: 500ms)
     --monitor-gpu N            : Index GPU pour nvidia-smi (defaut: 0)
 
@@ -119,6 +124,8 @@ DEFAULT_SWEEP_SCALES = ["m", "s", "n"]
 DEFAULT_SWEEP_RESOLUTIONS = [640, 512, 416, 320, 256]
 DEFAULT_SWEEP_QUANTS = ["fp32", "fp16"]
 DEFAULT_SWEEP_ORT_LEVELS = ["all", "basic", "disable"]
+DEFAULT_OAK_BENCH_DIRS = [ROOT_DIR / "variants" / "oak", ROOT_DIR / "models" / "oak"]
+DEFAULT_ORIN_BENCH_DIR = ROOT_DIR / "models" / "orin"
 
 # --- Seuils de confiance ---
 CONF_EVAL = 0.001  # seuil pour la courbe PR complete (mAP)
@@ -249,6 +256,7 @@ def benchmark_gpu_ort_sweep(
     monitor_enabled: bool,
     monitor_interval_ms: int,
     monitor_gpu_index: int,
+    monitor_target: str = "4070",
 ) -> int:
     if not variants_dir.exists():
         print(f"Erreur: Dossier variantes introuvable: {variants_dir}")
@@ -285,6 +293,7 @@ def benchmark_gpu_ort_sweep(
                 monitor_enabled=monitor_enabled,
                 monitor_interval_ms=monitor_interval_ms,
                 monitor_gpu_index=monitor_gpu_index,
+                monitor_target=monitor_target,
             )
 
     print("\n" + "=" * 60)
@@ -295,6 +304,85 @@ def benchmark_gpu_ort_sweep(
         print(f"Manquants  : {missing}")
 
     return 0 if total_runs > 0 else 1
+
+
+def select_oak_bench_dir() -> Path | None:
+    for candidate in DEFAULT_OAK_BENCH_DIRS:
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def benchmark_oak_sweep(
+    models_dir: Path,
+    num_classes: int,
+    dataset: str,
+    host_tag: str | None,
+    monitor_enabled: bool,
+    monitor_interval_ms: int,
+    monitor_gpu_index: int,
+) -> int:
+    blob_paths = sorted(models_dir.glob("*.blob"))
+    if not blob_paths:
+        print(f"Erreur: Aucun .blob trouve dans {models_dir}")
+        return 1
+
+    print("=" * 60)
+    print("BENCHMARK OAK-D (SWEEP)")
+    print("=" * 60)
+    print(f"Modeles  : {models_dir}")
+    print(f"Blobs    : {len(blob_paths)}")
+
+    for blob_path in blob_paths:
+        print("\n" + "-" * 40)
+        print(f"[SWEEP] {blob_path.name}")
+        print("-" * 40)
+        benchmark_oak(
+            str(blob_path),
+            num_classes,
+            dataset,
+            host_tag=host_tag,
+            monitor_enabled=monitor_enabled,
+            monitor_interval_ms=monitor_interval_ms,
+            monitor_gpu_index=monitor_gpu_index,
+        )
+
+    return 0
+
+
+def benchmark_orin_trt_sweep(
+    models_dir: Path,
+    num_classes: int,
+    dataset: str,
+    monitor_enabled: bool,
+    monitor_interval_ms: int,
+    monitor_gpu_index: int,
+) -> int:
+    engine_paths = sorted(models_dir.glob("*.engine"))
+    if not engine_paths:
+        print(f"Erreur: Aucun .engine trouve dans {models_dir}")
+        return 1
+
+    print("=" * 60)
+    print("BENCHMARK ORIN TRT (SWEEP)")
+    print("=" * 60)
+    print(f"Modeles  : {models_dir}")
+    print(f"Engines  : {len(engine_paths)}")
+
+    for engine_path in engine_paths:
+        print("\n" + "-" * 40)
+        print(f"[SWEEP] {engine_path.name}")
+        print("-" * 40)
+        benchmark_orin(
+            str(engine_path),
+            num_classes,
+            dataset,
+            monitor_enabled=monitor_enabled,
+            monitor_interval_ms=monitor_interval_ms,
+            monitor_gpu_index=monitor_gpu_index,
+        )
+
+    return 0
 
 
 class ResourceMonitor:
@@ -1259,6 +1347,7 @@ def benchmark_gpu_ort(
     monitor_enabled: bool = False,
     monitor_interval_ms: int = 500,
     monitor_gpu_index: int = 0,
+    monitor_target: str = "4070",
 ):
     """
     Benchmark sur GPU via ONNX Runtime.
@@ -1421,7 +1510,7 @@ def benchmark_gpu_ort(
         _ = session.run([output_name], {input_name: img_batch})
 
     monitor = start_resource_monitor(
-        monitor_enabled, "4070", monitor_interval_ms, monitor_gpu_index
+        monitor_enabled, monitor_target, monitor_interval_ms, monitor_gpu_index
     )
 
     print("\nInference...")
@@ -2952,8 +3041,12 @@ def main():
         "--target",
         type=str,
         required=True,
-        choices=["4070", "cpu", "oak", "orin"],
-        help="Cible hardware: '4070' (GPU), 'cpu' (ONNX Runtime CPU), 'oak' (Myriad X), 'orin' (Jetson)",
+        choices=["4070", "cpu", "oak", "orin", "orin_ort", "orin_trt"],
+        help=(
+            "Cible hardware: '4070' (GPU), 'cpu' (ONNX Runtime CPU), "
+            "'oak' (Myriad X), 'orin' (Jetson), 'orin_ort' (ORT sweep), "
+            "'orin_trt' (TRT sweep)"
+        ),
     )
     parser.add_argument(
         "--model",
@@ -3015,10 +3108,18 @@ def main():
         metavar="[4-8]",
         help="Nombre de shaves pour OAK (4-8). Si fourni, selectionne le blob *_{shaves}shave.blob",
     )
-    parser.add_argument(
+    monitor_group = parser.add_mutually_exclusive_group()
+    monitor_group.add_argument(
         "--monitor",
         action="store_true",
+        default=None,
         help="Activer le monitoring des ressources (CPU/RAM/GPU)",
+    )
+    monitor_group.add_argument(
+        "--no-monitor",
+        dest="monitor",
+        action="store_false",
+        help="Desactiver le monitoring",
     )
     parser.add_argument(
         "--monitor-interval-ms",
@@ -3035,8 +3136,11 @@ def main():
 
     args = parser.parse_args()
 
-    if args.target != "4070" and not args.model:
+    if args.target not in ["4070", "oak", "orin", "orin_ort", "orin_trt"] and not args.model:
         parser.error("--model est requis pour cette cible.")
+
+    if args.monitor is None:
+        args.monitor = args.target in ["4070", "oak"]
 
     if args.target == "4070" and not args.model:
         if args.backend != "ort":
@@ -3052,7 +3156,72 @@ def main():
             monitor_enabled=args.monitor,
             monitor_interval_ms=args.monitor_interval_ms,
             monitor_gpu_index=args.monitor_gpu,
+            monitor_target="4070",
         )
+    if args.target == "oak" and not args.model:
+        if args.shaves is not None:
+            print("[Warning] Sweep OAK ignore --shaves (blobs deja compiles).")
+        models_dir = select_oak_bench_dir()
+        if not models_dir:
+            print(
+                f"Erreur: Aucun dossier OAK trouve ({', '.join(map(str, DEFAULT_OAK_BENCH_DIRS))})"
+            )
+            return 1
+        return benchmark_oak_sweep(
+            models_dir,
+            args.num_classes,
+            args.dataset,
+            host_tag=args.host_tag,
+            monitor_enabled=args.monitor,
+            monitor_interval_ms=args.monitor_interval_ms,
+            monitor_gpu_index=args.monitor_gpu,
+        )
+    if args.target == "orin_ort" and not args.model:
+        if args.backend != "ort":
+            print("[Warning] Sweep Orin ORT utilise ORT par defaut.")
+        if args.ort_opt_level is not None:
+            print("[Warning] Sweep Orin ORT ignore --ort-opt-level (all/basic/disable).")
+        return benchmark_gpu_ort_sweep(
+            DEFAULT_VARIANTS_DIR,
+            args.num_classes,
+            args.dataset,
+            monitor_enabled=args.monitor,
+            monitor_interval_ms=args.monitor_interval_ms,
+            monitor_gpu_index=args.monitor_gpu,
+            monitor_target="orin",
+        )
+    if args.target == "orin_trt" and not args.model:
+        return benchmark_orin_trt_sweep(
+            DEFAULT_ORIN_BENCH_DIR,
+            args.num_classes,
+            args.dataset,
+            monitor_enabled=args.monitor,
+            monitor_interval_ms=args.monitor_interval_ms,
+            monitor_gpu_index=args.monitor_gpu,
+        )
+    if args.target == "orin" and not args.model:
+        status_trt = benchmark_orin_trt_sweep(
+            DEFAULT_ORIN_BENCH_DIR,
+            args.num_classes,
+            args.dataset,
+            monitor_enabled=args.monitor,
+            monitor_interval_ms=args.monitor_interval_ms,
+            monitor_gpu_index=args.monitor_gpu,
+        )
+        if args.backend != "ort":
+            print("[Warning] Sweep Orin ORT utilise ORT par defaut.")
+        if args.ort_opt_level is not None:
+            print("[Warning] Sweep Orin ORT ignore --ort-opt-level (all/basic/disable).")
+        status_ort = benchmark_gpu_ort_sweep(
+            DEFAULT_VARIANTS_DIR,
+            args.num_classes,
+            args.dataset,
+            monitor_enabled=args.monitor,
+            monitor_interval_ms=args.monitor_interval_ms,
+            monitor_gpu_index=args.monitor_gpu,
+            monitor_target="orin",
+        )
+        return 0 if status_trt == 0 and status_ort == 0 else 1
 
     # Resoudre le chemin
     if not args.model:
@@ -3095,6 +3264,10 @@ def main():
         print(f"Attention: Pour OAK, .blob attendu (recu: {ext})")
     elif args.target == "orin" and ext != ".engine":
         print(f"Attention: Pour Orin, .engine attendu (recu: {ext})")
+    elif args.target == "orin_ort" and ext != ".onnx":
+        print(f"Attention: Pour Orin ORT, .onnx attendu (recu: {ext})")
+    elif args.target == "orin_trt" and ext != ".engine":
+        print(f"Attention: Pour Orin TRT, .engine attendu (recu: {ext})")
 
     # Benchmark
     if args.target == "4070":
@@ -3107,6 +3280,7 @@ def main():
                 monitor_enabled=args.monitor,
                 monitor_interval_ms=args.monitor_interval_ms,
                 monitor_gpu_index=args.monitor_gpu,
+                monitor_target="4070",
             )
         else:
             benchmark_gpu_ultralytics(
@@ -3140,6 +3314,26 @@ def main():
             monitor_gpu_index=args.monitor_gpu,
         )
     elif args.target == "orin":
+        benchmark_orin(
+            model_path,
+            args.num_classes,
+            args.dataset,
+            monitor_enabled=args.monitor,
+            monitor_interval_ms=args.monitor_interval_ms,
+            monitor_gpu_index=args.monitor_gpu,
+        )
+    elif args.target == "orin_ort":
+        benchmark_gpu_ort(
+            model_path,
+            args.num_classes,
+            args.dataset,
+            ort_opt_level=args.ort_opt_level,
+            monitor_enabled=args.monitor,
+            monitor_interval_ms=args.monitor_interval_ms,
+            monitor_gpu_index=args.monitor_gpu,
+            monitor_target="orin",
+        )
+    elif args.target == "orin_trt":
         benchmark_orin(
             model_path,
             args.num_classes,
