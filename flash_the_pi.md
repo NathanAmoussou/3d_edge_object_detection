@@ -103,3 +103,17 @@ sudo apt install -y git
 ```bash
 git clone https://github.com/NathanAmoussou/3d_edge_object_detection.git
 ```
+
+Only to create a virtual environment the first time (to download the dependencies):
+
+```bash
+python3 -m venv .venv
+```
+
+```bash
+source .venv/bin/activate
+```
+
+## Connect from public WiFi
+
+...

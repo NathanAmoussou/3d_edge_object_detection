@@ -25,6 +25,9 @@ TODO (Phase 4): Metadata preservation
     - Copier/enrichir le .json du modele source vers l'artefact compile (.blob, .engine)
     - Ajouter les infos de compilation: target, flags (--fp16, --int8), timestamp
     - Preserver la lineage: parent_onnx, transform_type, experiment_id
+
+TODO Ajoute fonction qui swip génère toutes les variantes pour une cible (pour Oak par exemple,
+     toutes les inputs, quantization et shaves en une commande et dans le bon dossier cible).
 """
 
 import argparse

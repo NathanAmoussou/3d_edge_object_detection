@@ -3,9 +3,15 @@ Launches YOLOv11 on the OAK D PRO Camera.
 
 Supports headless mode (no display) for embedded systems like Raspberry Pi.
 In headless mode, prints detection results (detected, x, y, z) to stdout.
+
+Usage:
+    python detect_oak_redcube.py
+    python detect_oak_redcube.py --model models/oak/yolo11n_640_fp16_8shave.blob
+    python detect_oak_redcube.py --shaves 8
 """
 
 from pathlib import Path
+import argparse
 import os
 import cv2
 import depthai as dai
@@ -20,76 +26,84 @@ def is_headless() -> bool:
         True si pas de display, False sinon.
     """
     # Methode 1: Verifier DISPLAY (Linux/X11)
-    display = os.environ.get("DISPLAY")
-    if display is None or display == "":
-        return True
+    # display = os.environ.get("DISPLAY")
+    # if display is None or display == "":
+    #     return True
 
-    # Methode 2: Essayer d'ouvrir une fenetre OpenCV (plus robuste)
-    try:
-        test_img = np.zeros((1, 1, 3), dtype=np.uint8)
-        cv2.imshow("__test__", test_img)
-        cv2.waitKey(1)
-        cv2.destroyWindow("__test__")
-        return False
-    except cv2.error:
-        return True
+    # # Methode 2: Essayer d'ouvrir une fenetre OpenCV (plus robuste)
+    # try:
+    #     test_img = np.zeros((1, 1, 3), dtype=np.uint8)
+    #     cv2.imshow("__test__", test_img)
+    #     cv2.waitKey(1)
+    #     cv2.destroyWindow("__test__")
+    #     return False
+    # except cv2.error:
+    #     return True
+
+    return True
 
 
-# --- Configuration ---
-BLOB_PATH = Path(__file__).parent.parent / "models/red_cube_01/best_openvino_2022.1_6shave.blob"
+# --- Configuration par defaut ---
+ROOT_DIR = Path(__file__).parent.parent
+DEFAULT_BLOB_PATH = ROOT_DIR / "models/red_cube_01/best_openvino_2022.1_6shave.blob"
 INPUT_SIZE = 640
 NUM_CLASSES = 1
 CLASS_NAME = "red_cube"
 CONF_THRESHOLD = 0.5
 IOU_THRESHOLD = 0.4
 
-pipeline = dai.Pipeline()
 
-# --- 1. Caméra Couleur (RGB) ---
-cam_rgb = pipeline.create(dai.node.ColorCamera)
-cam_rgb.setPreviewSize(INPUT_SIZE, INPUT_SIZE)
-cam_rgb.setInterleaved(False)
-cam_rgb.setResolution(dai.ColorCameraProperties.SensorResolution.THE_1080_P)
-cam_rgb.setFps(30)
-cam_rgb.setColorOrder(dai.ColorCameraProperties.ColorOrder.BGR)
+def create_pipeline(blob_path: str) -> dai.Pipeline:
+    """Cree le pipeline DepthAI avec le blob specifie."""
+    pipeline = dai.Pipeline()
 
-# --- 2. Caméras Mono (Stéréo pour la profondeur) ---
-mono_left = pipeline.create(dai.node.MonoCamera)
-mono_left.setResolution(dai.MonoCameraProperties.SensorResolution.THE_400_P)
-mono_left.setBoardSocket(dai.CameraBoardSocket.CAM_B) # Gauche
+    # --- 1. Caméra Couleur (RGB) ---
+    cam_rgb = pipeline.create(dai.node.ColorCamera)
+    cam_rgb.setPreviewSize(INPUT_SIZE, INPUT_SIZE)
+    cam_rgb.setInterleaved(False)
+    cam_rgb.setResolution(dai.ColorCameraProperties.SensorResolution.THE_1080_P)
+    cam_rgb.setFps(30)
+    cam_rgb.setColorOrder(dai.ColorCameraProperties.ColorOrder.BGR)
 
-mono_right = pipeline.create(dai.node.MonoCamera)
-mono_right.setResolution(dai.MonoCameraProperties.SensorResolution.THE_400_P)
-mono_right.setBoardSocket(dai.CameraBoardSocket.CAM_C) # Droite
+    # --- 2. Caméras Mono (Stéréo pour la profondeur) ---
+    mono_left = pipeline.create(dai.node.MonoCamera)
+    mono_left.setResolution(dai.MonoCameraProperties.SensorResolution.THE_400_P)
+    mono_left.setBoardSocket(dai.CameraBoardSocket.CAM_B)  # Gauche
 
-# --- 3. Nœud de Profondeur (StereoDepth) ---
-stereo = pipeline.create(dai.node.StereoDepth)
-stereo.setDefaultProfilePreset(dai.node.StereoDepth.PresetMode.HIGH_DENSITY)
-# IMPORTANT: Aligner la profondeur sur la caméra RGB
-stereo.setDepthAlign(dai.CameraBoardSocket.CAM_A)
-stereo.setOutputSize(640, 360) # Réduire un peu la taille pour la vitesse si besoin
+    mono_right = pipeline.create(dai.node.MonoCamera)
+    mono_right.setResolution(dai.MonoCameraProperties.SensorResolution.THE_400_P)
+    mono_right.setBoardSocket(dai.CameraBoardSocket.CAM_C)  # Droite
 
-mono_left.out.link(stereo.left)
-mono_right.out.link(stereo.right)
+    # --- 3. Nœud de Profondeur (StereoDepth) ---
+    stereo = pipeline.create(dai.node.StereoDepth)
+    stereo.setDefaultProfilePreset(dai.node.StereoDepth.PresetMode.HIGH_DENSITY)
+    # IMPORTANT: Aligner la profondeur sur la caméra RGB
+    stereo.setDepthAlign(dai.CameraBoardSocket.CAM_A)
+    stereo.setOutputSize(640, 360)
 
-# --- 4. Réseau de neurones (NeuralNetwork) ---
-nn = pipeline.create(dai.node.NeuralNetwork)
-nn.setBlobPath(str(BLOB_PATH))
-cam_rgb.preview.link(nn.input)
+    mono_left.out.link(stereo.left)
+    mono_right.out.link(stereo.right)
 
-# --- 5. Sorties (XLinkOut) ---
-xout_rgb = pipeline.create(dai.node.XLinkOut)
-xout_rgb.setStreamName("rgb")
-cam_rgb.preview.link(xout_rgb.input)
+    # --- 4. Réseau de neurones (NeuralNetwork) ---
+    nn = pipeline.create(dai.node.NeuralNetwork)
+    nn.setBlobPath(str(blob_path))
+    cam_rgb.preview.link(nn.input)
 
-xout_nn = pipeline.create(dai.node.XLinkOut)
-xout_nn.setStreamName("nn")
-nn.out.link(xout_nn.input)
+    # --- 5. Sorties (XLinkOut) ---
+    xout_rgb = pipeline.create(dai.node.XLinkOut)
+    xout_rgb.setStreamName("rgb")
+    cam_rgb.preview.link(xout_rgb.input)
 
-# Sortie Profondeur
-xout_depth = pipeline.create(dai.node.XLinkOut)
-xout_depth.setStreamName("depth")
-stereo.depth.link(xout_depth.input)
+    xout_nn = pipeline.create(dai.node.XLinkOut)
+    xout_nn.setStreamName("nn")
+    nn.out.link(xout_nn.input)
+
+    # Sortie Profondeur
+    xout_depth = pipeline.create(dai.node.XLinkOut)
+    xout_depth.setStreamName("depth")
+    stereo.depth.link(xout_depth.input)
+
+    return pipeline
 
 
 # --- Fonction de décodage YOLO (La même que précédemment) ---
@@ -182,6 +196,42 @@ def main():
     x, y sont les coordonnees normalisees (0-1) du centre de la detection.
     z est la distance en metres.
     """
+    parser = argparse.ArgumentParser(
+        description="Detection YOLOv11 sur OAK-D avec profondeur"
+    )
+    parser.add_argument(
+        "--model",
+        type=str,
+        default=None,
+        help="Chemin vers le fichier .blob (defaut: models/red_cube_01/...)",
+    )
+    parser.add_argument(
+        "--shaves",
+        type=int,
+        default=None,
+        choices=range(1, 17),
+        metavar="[1-16]",
+        help="Nombre de shaves (selectionne le blob correspondant si --model non specifie)",
+    )
+    args = parser.parse_args()
+
+    # Determiner le chemin du blob
+    if args.model:
+        blob_path = Path(args.model)
+        if not blob_path.exists():
+            blob_path = ROOT_DIR / args.model
+    elif args.shaves:
+        # Convention de nommage: *_{shaves}shave.blob
+        blob_path = ROOT_DIR / f"models/red_cube_01/best_openvino_2022.1_{args.shaves}shave.blob"
+    else:
+        blob_path = DEFAULT_BLOB_PATH
+
+    if not blob_path.exists():
+        print(f"[ERREUR] Blob introuvable: {blob_path}")
+        return 1
+
+    print(f"[INFO] Blob: {blob_path}")
+
     headless = is_headless()
 
     if headless:
@@ -189,6 +239,8 @@ def main():
         print("[INFO] Format sortie: detected,x,y,z")
     else:
         print("[INFO] Mode display actif")
+
+    pipeline = create_pipeline(str(blob_path))
 
     with dai.Device(pipeline) as device:
         q_rgb = device.getOutputQueue(name="rgb", maxSize=4, blocking=False)
