@@ -9,6 +9,8 @@ Usage:
     # CPU (PC ou Raspberry Pi 4)
     python scripts/benchmark.py --target cpu --model models/variants/yolo11n_640_fp32.onnx --host-tag PC --cpu-threads 8
     python scripts/benchmark.py --target cpu --model models/variants/yolo11n_320_fp32.onnx --host-tag PI4 --cpu-threads 4
+    python scripts/benchmark.py --target cpu
+    python scripts/benchmark.py --target pi4
 
     # OAK-D (Myriad X VPU)
     python scripts/benchmark.py --target oak --model models/oak/yolo11n_640_fp16_6shave.blob --host-tag PC
@@ -22,7 +24,7 @@ Usage:
     python scripts/benchmark.py --target orin_trt
 
 Options:
-    --target 4070|cpu|oak|orin|orin_ort|orin_trt : Cible hardware
+    --target 4070|cpu|pi4|oak|orin|orin_ort|orin_trt : Cible hardware
     --model PATH               : Chemin vers le modele (.onnx pour GPU/CPU, .blob pour OAK, .engine pour Orin)
     --num-classes N            : Nombre de classes du modele (defaut: 80 pour COCO)
     --dataset coco128|coco     : Dataset a utiliser (defaut: coco128)
@@ -294,6 +296,67 @@ def benchmark_gpu_ort_sweep(
                 monitor_interval_ms=monitor_interval_ms,
                 monitor_gpu_index=monitor_gpu_index,
                 monitor_target=monitor_target,
+            )
+
+    print("\n" + "=" * 60)
+    print("SWEEP TERMINE")
+    print("=" * 60)
+    print(f"Runs       : {total_runs}")
+    if missing:
+        print(f"Manquants  : {missing}")
+
+    return 0 if total_runs > 0 else 1
+
+
+def benchmark_cpu_ort_sweep(
+    variants_dir: Path,
+    num_classes: int,
+    dataset: str,
+    host_tag: str | None,
+    cpu_threads: int | None,
+    cpu_execution_mode: str,
+    monitor_enabled: bool,
+    monitor_interval_ms: int,
+    monitor_gpu_index: int,
+) -> int:
+    if not variants_dir.exists():
+        print(f"Erreur: Dossier variantes introuvable: {variants_dir}")
+        return 1
+
+    missing = 0
+    total_runs = 0
+    print("=" * 60)
+    print("BENCHMARK CPU - ORT SWEEP")
+    print("=" * 60)
+    print(f"Variantes : {variants_dir}")
+    print(
+        f"Models    : {', '.join([f'yolo11{s}' for s in DEFAULT_SWEEP_SCALES])}"
+    )
+    print(f"Resolutions: {', '.join(map(str, DEFAULT_SWEEP_RESOLUTIONS))}")
+    print(f"Quantifs  : {', '.join(DEFAULT_SWEEP_QUANTS)}")
+    print(f"ORT levels: {', '.join(DEFAULT_SWEEP_ORT_LEVELS)}")
+
+    for model_path in get_default_variant_paths(variants_dir):
+        if not model_path.exists():
+            print(f"[SKIP] {model_path} (introuvable)")
+            missing += 1
+            continue
+        for ort_level in DEFAULT_SWEEP_ORT_LEVELS:
+            total_runs += 1
+            print("\n" + "-" * 40)
+            print(f"[SWEEP] {model_path.name} | ORT={ort_level.upper()}")
+            print("-" * 40)
+            benchmark_cpu_ort(
+                str(model_path),
+                num_classes,
+                dataset,
+                host_tag=host_tag,
+                cpu_threads=cpu_threads,
+                cpu_execution_mode=cpu_execution_mode,
+                ort_opt_level=ort_level,
+                monitor_enabled=monitor_enabled,
+                monitor_interval_ms=monitor_interval_ms,
+                monitor_gpu_index=monitor_gpu_index,
             )
 
     print("\n" + "=" * 60)
@@ -1691,6 +1754,7 @@ def benchmark_cpu_ort(
     host_tag: str | None = None,
     cpu_threads: int | None = None,
     cpu_execution_mode: str = "sequential",
+    ort_opt_level: str | None = None,
     monitor_enabled: bool = False,
     monitor_interval_ms: int = 500,
     monitor_gpu_index: int = 0,
@@ -1728,9 +1792,17 @@ def benchmark_cpu_ort(
     # Configurer SessionOptions pour CPU
     sess_options = ort.SessionOptions()
 
-    # Niveau d'optimisation: ALL par defaut pour CPU
-    sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-    ort_level = "ALL"
+    # Niveau d'optimisation ORT
+    ort_level_requested = ort_opt_level or "all"
+    ort_level_map = {
+        "disable": ort.GraphOptimizationLevel.ORT_DISABLE_ALL,
+        "basic": ort.GraphOptimizationLevel.ORT_ENABLE_BASIC,
+        "extended": ort.GraphOptimizationLevel.ORT_ENABLE_EXTENDED,
+        "all": ort.GraphOptimizationLevel.ORT_ENABLE_ALL,
+    }
+    ort_level_effective = ort_level_requested
+    sess_options.graph_optimization_level = ort_level_map[ort_level_requested]
+    print(f"ORT Opt Level: {ort_level_requested.upper()}")
 
     # Configurer les threads CPU
     # TODO (THREADS): inter_op_num_threads=1 est un choix de stabilite pour le benchmark.
@@ -1946,7 +2018,7 @@ def benchmark_cpu_ort(
         postprocess_ms=timing["postprocess_ms"],
         fps=timing["fps"],
         # ORT config tracking
-        ort_level_requested=f"{ort_level}_{exec_mode_tag}_{thread_config}",
+    ort_level_requested=f"{ort_level_effective.upper()}_{exec_mode_tag}_{thread_config}",
         providers_used=providers_used,
         monitor_stats=monitor_stats,
     )
@@ -3041,9 +3113,10 @@ def main():
         "--target",
         type=str,
         required=True,
-        choices=["4070", "cpu", "oak", "orin", "orin_ort", "orin_trt"],
+        choices=["4070", "cpu", "pi4", "oak", "orin", "orin_ort", "orin_trt"],
         help=(
             "Cible hardware: '4070' (GPU), 'cpu' (ONNX Runtime CPU), "
+            "'pi4' (CPU sweep), "
             "'oak' (Myriad X), 'orin' (Jetson), 'orin_ort' (ORT sweep), "
             "'orin_trt' (TRT sweep)"
         ),
@@ -3052,7 +3125,10 @@ def main():
         "--model",
         type=str,
         default=None,
-        help="Chemin vers le modele (.onnx pour GPU, .blob pour OAK, .engine pour Orin)",
+        help=(
+            "Chemin vers le modele (.onnx pour GPU/CPU, .blob pour OAK, .engine pour Orin). "
+            "Optionnel pour 4070/cpu/pi4/oak/orin_ort/orin_trt."
+        ),
     )
     parser.add_argument(
         "--num-classes",
@@ -3136,11 +3212,11 @@ def main():
 
     args = parser.parse_args()
 
-    if args.target not in ["4070", "oak", "orin", "orin_ort", "orin_trt"] and not args.model:
+    if args.target not in ["4070", "cpu", "pi4", "oak", "orin", "orin_ort", "orin_trt"] and not args.model:
         parser.error("--model est requis pour cette cible.")
 
     if args.monitor is None:
-        args.monitor = args.target in ["4070", "oak"]
+        args.monitor = True
 
     if args.target == "4070" and not args.model:
         if args.backend != "ort":
@@ -3157,6 +3233,35 @@ def main():
             monitor_interval_ms=args.monitor_interval_ms,
             monitor_gpu_index=args.monitor_gpu,
             monitor_target="4070",
+        )
+    if args.target == "cpu" and not args.model:
+        if args.ort_opt_level is not None:
+            print("[Warning] Sweep CPU ignore --ort-opt-level (all/basic/disable).")
+        return benchmark_cpu_ort_sweep(
+            DEFAULT_VARIANTS_DIR,
+            args.num_classes,
+            args.dataset,
+            host_tag=args.host_tag,
+            cpu_threads=args.cpu_threads,
+            cpu_execution_mode=args.cpu_execution_mode,
+            monitor_enabled=args.monitor,
+            monitor_interval_ms=args.monitor_interval_ms,
+            monitor_gpu_index=args.monitor_gpu,
+        )
+    if args.target == "pi4" and not args.model:
+        if args.ort_opt_level is not None:
+            print("[Warning] Sweep PI4 ignore --ort-opt-level (all/basic/disable).")
+        host_tag = args.host_tag or "PI4"
+        return benchmark_cpu_ort_sweep(
+            DEFAULT_VARIANTS_DIR,
+            args.num_classes,
+            args.dataset,
+            host_tag=host_tag,
+            cpu_threads=args.cpu_threads,
+            cpu_execution_mode=args.cpu_execution_mode,
+            monitor_enabled=args.monitor,
+            monitor_interval_ms=args.monitor_interval_ms,
+            monitor_gpu_index=args.monitor_gpu,
         )
     if args.target == "oak" and not args.model:
         if args.shaves is not None:
@@ -3260,6 +3365,8 @@ def main():
         print(f"Attention: Pour GPU, .pt ou .onnx attendu (recu: {ext})")
     elif args.target == "cpu" and ext != ".onnx":
         print(f"Attention: Pour CPU, .onnx attendu (recu: {ext})")
+    elif args.target == "pi4" and ext != ".onnx":
+        print(f"Attention: Pour PI4, .onnx attendu (recu: {ext})")
     elif args.target == "oak" and ext != ".blob":
         print(f"Attention: Pour OAK, .blob attendu (recu: {ext})")
     elif args.target == "orin" and ext != ".engine":
@@ -3299,6 +3406,20 @@ def main():
             host_tag=args.host_tag,
             cpu_threads=args.cpu_threads,
             cpu_execution_mode=args.cpu_execution_mode,
+            ort_opt_level=args.ort_opt_level,
+            monitor_enabled=args.monitor,
+            monitor_interval_ms=args.monitor_interval_ms,
+            monitor_gpu_index=args.monitor_gpu,
+        )
+    elif args.target == "pi4":
+        benchmark_cpu_ort(
+            model_path,
+            args.num_classes,
+            args.dataset,
+            host_tag=args.host_tag or "PI4",
+            cpu_threads=args.cpu_threads,
+            cpu_execution_mode=args.cpu_execution_mode,
+            ort_opt_level=args.ort_opt_level,
             monitor_enabled=args.monitor,
             monitor_interval_ms=args.monitor_interval_ms,
             monitor_gpu_index=args.monitor_gpu,
