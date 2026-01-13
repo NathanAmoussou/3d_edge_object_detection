@@ -26,6 +26,9 @@ Options:
     --cpu-threads N            : Nombre de threads intra-op pour inference CPU (defaut: auto)
     --cpu-execution-mode       : Mode d'execution ORT CPU: sequential ou parallel (defaut: sequential)
     --shaves N                 : Nombre de shaves OAK (4-8) (auto-complete le nom du blob: *_{N}shave.blob)
+    --monitor                  : Activer le monitoring CPU/RAM/GPU (psutil + nvidia-smi/tegrastats)
+    --monitor-interval-ms N    : Intervalle d'echantillonnage (defaut: 500ms)
+    --monitor-gpu N            : Index GPU pour nvidia-smi (defaut: 0)
 
 ===============================================================================
 DECISIONS DE CONCEPTION - EQUITE MULTI-HARDWARE
@@ -94,6 +97,8 @@ import csv
 import json
 import os
 import re
+import subprocess
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -219,6 +224,253 @@ def compute_timing_stats(
         else 0.0,
         "fps": fps,
     }
+
+
+class ResourceMonitor:
+    """
+    Monitoring host (CPU/RAM) + GPU (NVIDIA) + Jetson (tegrastats) en thread.
+
+    Notes:
+    - psutil est optionnel: si absent, le monitor est desactive.
+    - nvidia-smi est interroge si active (GPU dGPU).
+    - tegrastats est lance si active (Jetson).
+    """
+
+    def __init__(
+        self,
+        interval_ms: int = 500,
+        enable_nvidia_smi: bool = False,
+        nvidia_gpu_index: int = 0,
+        enable_tegrastats: bool = False,
+    ):
+        self.interval = interval_ms / 1000.0
+        self.enable_nvidia_smi = enable_nvidia_smi
+        self.nvidia_gpu_index = nvidia_gpu_index
+        self.enable_tegrastats = enable_tegrastats
+
+        self._stop = threading.Event()
+        self._th = None
+        self._tegrastats_proc = None
+
+        self.samples: list[dict] = []
+        self._last_gr3d = None
+        self._last_emc = None
+        self._nvidia_smi_ok = True
+
+        self._psutil = None
+        self.proc = None
+        self.cpu_count = None
+        try:
+            import psutil  # type: ignore
+
+            self._psutil = psutil
+            self.proc = psutil.Process(os.getpid())
+            self.cpu_count = psutil.cpu_count() or None
+        except Exception:
+            self._psutil = None
+            self.proc = None
+            self.cpu_count = None
+
+    def start(self) -> bool:
+        if not self._psutil or not self.proc:
+            print("[Monitor] psutil indisponible, monitoring desactive.")
+            return False
+
+        # Prime cpu_percent (sinon 0.0 au 1er read)
+        try:
+            self.proc.cpu_percent(interval=None)
+        except Exception:
+            pass
+
+        if self.enable_tegrastats:
+            self._start_tegrastats()
+
+        self._th = threading.Thread(target=self._run, daemon=True)
+        self._th.start()
+        return True
+
+    def stop(self) -> dict:
+        if not self._psutil or not self.proc:
+            return {}
+
+        self._stop.set()
+        if self._th:
+            self._th.join(timeout=2.0)
+        self._stop_tegrastats()
+        return self._summarize()
+
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            t = time.time()
+
+            cpu_p = self.proc.cpu_percent(interval=None)
+            cpu_norm = (
+                (cpu_p / self.cpu_count) if self.cpu_count and self.cpu_count > 0 else None
+            )
+            rss_mb = self.proc.memory_info().rss / (1024 * 1024)
+            vm = self._psutil.virtual_memory()
+            ram_used_mb = (vm.total - vm.available) / (1024 * 1024)
+
+            gpu_util = None
+            vram_mb = None
+            if self.enable_nvidia_smi and self._nvidia_smi_ok:
+                gpu_util, vram_mb = self._read_nvidia_smi()
+
+            gr3d = self._last_gr3d
+            emc = self._last_emc
+
+            self.samples.append(
+                {
+                    "t": t,
+                    "cpu_proc": cpu_p,
+                    "cpu_proc_norm": cpu_norm,
+                    "rss_mb": rss_mb,
+                    "ram_used_mb": ram_used_mb,
+                    "gpu_util": gpu_util,
+                    "vram_mb": vram_mb,
+                    "gr3d": gr3d,
+                    "emc": emc,
+                }
+            )
+
+            time.sleep(self.interval)
+
+    def _read_nvidia_smi(self) -> tuple[float | None, float | None]:
+        try:
+            out = subprocess.check_output(
+                [
+                    "nvidia-smi",
+                    "-i",
+                    str(self.nvidia_gpu_index),
+                    "--query-gpu=utilization.gpu,memory.used",
+                    "--format=csv,noheader,nounits",
+                ],
+                text=True,
+            ).strip()
+            if not out:
+                return None, None
+            line = out.splitlines()[0]
+            u, m = [x.strip() for x in line.split(",")]
+            return float(u), float(m)
+        except Exception:
+            self._nvidia_smi_ok = False
+            return None, None
+
+    def _start_tegrastats(self) -> None:
+        try:
+            interval_ms = max(100, int(self.interval * 1000))
+            self._tegrastats_proc = subprocess.Popen(
+                ["tegrastats", "--interval", str(interval_ms)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+            threading.Thread(target=self._read_tegrastats_loop, daemon=True).start()
+        except Exception:
+            self._tegrastats_proc = None
+
+    def _read_tegrastats_loop(self) -> None:
+        rgx_gr3d = re.compile(r"GR3D_FREQ\s+(\d+)%")
+        rgx_emc = re.compile(r"EMC_FREQ\s+(\d+)%")
+        if not self._tegrastats_proc or not self._tegrastats_proc.stdout:
+            return
+        for line in self._tegrastats_proc.stdout:
+            m = rgx_gr3d.search(line)
+            if m:
+                self._last_gr3d = float(m.group(1))
+            m = rgx_emc.search(line)
+            if m:
+                self._last_emc = float(m.group(1))
+            if self._stop.is_set():
+                break
+
+    def _stop_tegrastats(self) -> None:
+        if self._tegrastats_proc:
+            try:
+                self._tegrastats_proc.terminate()
+            except Exception:
+                pass
+
+    def _summarize(self) -> dict:
+        if not self.samples:
+            return {}
+
+        def stats(key: str) -> tuple[float | None, float | None, float | None]:
+            vals = [s[key] for s in self.samples if s.get(key) is not None]
+            if not vals:
+                return None, None, None
+            vals_sorted = sorted(vals)
+            mean = sum(vals) / len(vals)
+            p95 = vals_sorted[int(0.95 * (len(vals_sorted) - 1))]
+            mx = vals_sorted[-1]
+            return mean, p95, mx
+
+        cpu_mean, cpu_p95, cpu_max = stats("cpu_proc")
+        cpu_norm_mean, cpu_norm_p95, cpu_norm_max = stats("cpu_proc_norm")
+        rss_mean, rss_p95, rss_max = stats("rss_mb")
+        ram_mean, ram_p95, ram_max = stats("ram_used_mb")
+        gpu_mean, gpu_p95, gpu_max = stats("gpu_util")
+        vram_mean, vram_p95, vram_max = stats("vram_mb")
+        gr3d_mean, gr3d_p95, gr3d_max = stats("gr3d")
+        emc_mean, emc_p95, emc_max = stats("emc")
+
+        return {
+            "cpu_proc_mean": cpu_mean,
+            "cpu_proc_p95": cpu_p95,
+            "cpu_proc_max": cpu_max,
+            "cpu_proc_norm_mean": cpu_norm_mean,
+            "cpu_proc_norm_p95": cpu_norm_p95,
+            "cpu_proc_norm_max": cpu_norm_max,
+            "rss_mb_mean": rss_mean,
+            "rss_mb_p95": rss_p95,
+            "rss_mb_max": rss_max,
+            "ram_used_mb_mean": ram_mean,
+            "ram_used_mb_p95": ram_p95,
+            "ram_used_mb_max": ram_max,
+            "gpu_util_mean": gpu_mean,
+            "gpu_util_p95": gpu_p95,
+            "gpu_util_max": gpu_max,
+            "vram_mb_mean": vram_mean,
+            "vram_mb_p95": vram_p95,
+            "vram_mb_max": vram_max,
+            "gr3d_mean": gr3d_mean,
+            "gr3d_p95": gr3d_p95,
+            "gr3d_max": gr3d_max,
+            "emc_mean": emc_mean,
+            "emc_p95": emc_p95,
+            "emc_max": emc_max,
+        }
+
+
+def start_resource_monitor(
+    enabled: bool,
+    target: str,
+    interval_ms: int,
+    gpu_index: int,
+) -> ResourceMonitor | None:
+    if not enabled:
+        return None
+
+    enable_nvidia_smi = target == "4070"
+    enable_tegrastats = target == "orin"
+    monitor = ResourceMonitor(
+        interval_ms=interval_ms,
+        enable_nvidia_smi=enable_nvidia_smi,
+        nvidia_gpu_index=gpu_index,
+        enable_tegrastats=enable_tegrastats,
+    )
+    if not monitor.start():
+        return None
+    print(
+        f"[Monitor] interval={interval_ms}ms, nvidia-smi={enable_nvidia_smi}, tegrastats={enable_tegrastats}"
+    )
+    return monitor
+
+
+def stop_resource_monitor(monitor: ResourceMonitor | None) -> dict:
+    if not monitor:
+        return {}
+    return monitor.stop()
 
 
 def parse_imgsz_from_filename(filepath: str) -> int:
@@ -378,6 +630,8 @@ def save_results(
     # ORT config tracking (Phase 4)
     ort_level_requested: str = "N/A",
     providers_used: str = "N/A",
+    # Resource monitoring (optional)
+    monitor_stats: dict | None = None,
 ):
     """
     Sauvegarde les resultats dans le CSV avec metadonnees completes.
@@ -395,7 +649,20 @@ def save_results(
     - inference_ms: Temps moyen inference (ms)
     - postprocess_ms: Temps moyen postprocessing (ms)
     - fps: Throughput (images/sec)
+
+    Resource monitoring (optional):
+    - CPU process %, RSS, RAM system, GPU utilization/VRAM, GR3D/EMC (Jetson)
     """
+    monitor_stats = monitor_stats or {}
+
+    def fmt(value: float | None) -> str:
+        if value is None:
+            return ""
+        try:
+            return f"{float(value):.2f}"
+        except (TypeError, ValueError):
+            return ""
+
     file_exists = RESULTS_FILE.exists()
     versions = get_versions()
 
@@ -424,6 +691,40 @@ def save_results(
                     "Inference_ms",
                     "Postprocess_ms",
                     "FPS",
+                    # Resource monitoring
+                    "CPU_Proc_Mean",
+                    "CPU_Proc_P95",
+                    "CPU_Proc_Max",
+                    "CPU_Proc_Norm_Mean",
+                    "CPU_Proc_Norm_P95",
+                    "CPU_Proc_Norm_Max",
+                    "RAM_RSS_MB_Mean",
+                    "RAM_RSS_MB_P95",
+                    "RAM_RSS_MB_Max",
+                    "RAM_Sys_Used_MB_Mean",
+                    "RAM_Sys_Used_MB_P95",
+                    "RAM_Sys_Used_MB_Max",
+                    "GPU_Util_Mean",
+                    "GPU_Util_P95",
+                    "GPU_Util_Max",
+                    "VRAM_Used_MB_Mean",
+                    "VRAM_Used_MB_P95",
+                    "VRAM_Used_MB_Max",
+                    "GR3D_Mean",
+                    "GR3D_P95",
+                    "GR3D_Max",
+                    "EMC_Mean",
+                    "EMC_P95",
+                    "EMC_Max",
+                    "OAK_LeonCSS_CPU_Pct_Mean",
+                    "OAK_LeonCSS_CPU_Pct_P95",
+                    "OAK_LeonCSS_CPU_Pct_Max",
+                    "OAK_DDR_Used_MB_Mean",
+                    "OAK_DDR_Used_MB_P95",
+                    "OAK_DDR_Used_MB_Max",
+                    "OAK_CMX_Used_MB_Mean",
+                    "OAK_CMX_Used_MB_P95",
+                    "OAK_CMX_Used_MB_Max",
                     # ORT config tracking (Phase 4)
                     "ORT_Level_Requested",
                     "Providers_Used",
@@ -468,6 +769,40 @@ def save_results(
                 f"{inference_ms:.2f}",
                 f"{postprocess_ms:.2f}",
                 f"{fps:.2f}",
+                # Resource monitoring
+                fmt(monitor_stats.get("cpu_proc_mean")),
+                fmt(monitor_stats.get("cpu_proc_p95")),
+                fmt(monitor_stats.get("cpu_proc_max")),
+                fmt(monitor_stats.get("cpu_proc_norm_mean")),
+                fmt(monitor_stats.get("cpu_proc_norm_p95")),
+                fmt(monitor_stats.get("cpu_proc_norm_max")),
+                fmt(monitor_stats.get("rss_mb_mean")),
+                fmt(monitor_stats.get("rss_mb_p95")),
+                fmt(monitor_stats.get("rss_mb_max")),
+                fmt(monitor_stats.get("ram_used_mb_mean")),
+                fmt(monitor_stats.get("ram_used_mb_p95")),
+                fmt(monitor_stats.get("ram_used_mb_max")),
+                fmt(monitor_stats.get("gpu_util_mean")),
+                fmt(monitor_stats.get("gpu_util_p95")),
+                fmt(monitor_stats.get("gpu_util_max")),
+                fmt(monitor_stats.get("vram_mb_mean")),
+                fmt(monitor_stats.get("vram_mb_p95")),
+                fmt(monitor_stats.get("vram_mb_max")),
+                fmt(monitor_stats.get("gr3d_mean")),
+                fmt(monitor_stats.get("gr3d_p95")),
+                fmt(monitor_stats.get("gr3d_max")),
+                fmt(monitor_stats.get("emc_mean")),
+                fmt(monitor_stats.get("emc_p95")),
+                fmt(monitor_stats.get("emc_max")),
+                fmt(monitor_stats.get("oak_leon_css_cpu_pct_mean")),
+                fmt(monitor_stats.get("oak_leon_css_cpu_pct_p95")),
+                fmt(monitor_stats.get("oak_leon_css_cpu_pct_max")),
+                fmt(monitor_stats.get("oak_ddr_used_mb_mean")),
+                fmt(monitor_stats.get("oak_ddr_used_mb_p95")),
+                fmt(monitor_stats.get("oak_ddr_used_mb_max")),
+                fmt(monitor_stats.get("oak_cmx_used_mb_mean")),
+                fmt(monitor_stats.get("oak_cmx_used_mb_p95")),
+                fmt(monitor_stats.get("oak_cmx_used_mb_max")),
                 # ORT config tracking (Phase 4)
                 ort_level_requested,
                 providers_used,
@@ -850,6 +1185,9 @@ def benchmark_gpu_ort(
     num_classes: int,
     dataset: str = "coco128",
     ort_opt_level: str | None = None,
+    monitor_enabled: bool = False,
+    monitor_interval_ms: int = 500,
+    monitor_gpu_index: int = 0,
 ):
     """
     Benchmark sur GPU via ONNX Runtime.
@@ -1011,6 +1349,10 @@ def benchmark_gpu_ort(
         img_batch = np.expand_dims(img_chw, axis=0).astype(input_dtype)
         _ = session.run([output_name], {input_name: img_batch})
 
+    monitor = start_resource_monitor(
+        monitor_enabled, "4070", monitor_interval_ms, monitor_gpu_index
+    )
+
     print("\nInference...")
     all_predictions = []
     all_ground_truths = []
@@ -1101,6 +1443,8 @@ def benchmark_gpu_ort(
         if (idx + 1) % 20 == 0:
             print(f"  {idx + 1}/{len(dataset_items)} images...")
 
+    monitor_stats = stop_resource_monitor(monitor)
+
     print("\nCalcul des metriques...")
     metrics = compute_map50_prf1(
         all_predictions, all_ground_truths, conf_op=CONF_OP, iou_thr=MATCH_IOU
@@ -1171,6 +1515,7 @@ def benchmark_gpu_ort(
         # ORT config tracking (Phase 4)
         ort_level_requested=f"{ort_level_requested}->{ort_level_effective}",
         providers_used=providers_used,
+        monitor_stats=monitor_stats,
     )
 
 
@@ -1186,6 +1531,9 @@ def benchmark_cpu_ort(
     host_tag: str | None = None,
     cpu_threads: int | None = None,
     cpu_execution_mode: str = "sequential",
+    monitor_enabled: bool = False,
+    monitor_interval_ms: int = 500,
+    monitor_gpu_index: int = 0,
 ):
     """
     Benchmark sur CPU via ONNX Runtime CPUExecutionProvider.
@@ -1286,6 +1634,10 @@ def benchmark_cpu_ort(
         img_batch = np.expand_dims(img_chw, axis=0).astype(input_dtype)
         _ = session.run([output_name], {input_name: img_batch})
 
+    monitor = start_resource_monitor(
+        monitor_enabled, "cpu", monitor_interval_ms, monitor_gpu_index
+    )
+
     print("\nInference...")
     all_predictions = []
     all_ground_truths = []
@@ -1374,6 +1726,8 @@ def benchmark_cpu_ort(
         if (idx + 1) % 20 == 0:
             print(f"  {idx + 1}/{len(dataset_items)} images...")
 
+    monitor_stats = stop_resource_monitor(monitor)
+
     print("\nCalcul des metriques...")
     metrics = compute_map50_prf1(
         all_predictions, all_ground_truths, conf_op=CONF_OP, iou_thr=MATCH_IOU
@@ -1434,6 +1788,7 @@ def benchmark_cpu_ort(
         # ORT config tracking
         ort_level_requested=f"{ort_level}_{exec_mode_tag}_{thread_config}",
         providers_used=providers_used,
+        monitor_stats=monitor_stats,
     )
 
 
@@ -1446,6 +1801,9 @@ def benchmark_gpu_ultralytics(
     model_path: str,
     num_classes: int,
     dataset: str = "coco128",
+    monitor_enabled: bool = False,
+    monitor_interval_ms: int = 500,
+    monitor_gpu_index: int = 0,
 ):
     """
     Benchmark sur GPU via Ultralytics.
@@ -1488,6 +1846,10 @@ def benchmark_gpu_ultralytics(
             _ = model.predict(
                 img_lb, imgsz=imgsz, conf=CONF_EVAL, device=0, verbose=False, half=True
             )
+
+    monitor = start_resource_monitor(
+        monitor_enabled, "4070", monitor_interval_ms, monitor_gpu_index
+    )
 
     print("\nInference...")
     all_predictions = []
@@ -1575,6 +1937,8 @@ def benchmark_gpu_ultralytics(
                 )
             all_ground_truths.append(gt_list)
 
+    monitor_stats = stop_resource_monitor(monitor)
+
     metrics = compute_map50_prf1(
         all_predictions, all_ground_truths, conf_op=CONF_OP, iou_thr=MATCH_IOU
     )
@@ -1624,6 +1988,7 @@ def benchmark_gpu_ultralytics(
         inference_ms=timing["inference_ms"],
         postprocess_ms=timing["postprocess_ms"],
         fps=timing["fps"],
+        monitor_stats=monitor_stats,
     )
 
 
@@ -1637,6 +2002,9 @@ def benchmark_oak(
     num_classes: int,
     dataset: str = "coco128",
     host_tag: str | None = None,
+    monitor_enabled: bool = False,
+    monitor_interval_ms: int = 500,
+    monitor_gpu_index: int = 0,
 ):
     """
     Benchmark sur OAK-D (Myriad X VPU).
@@ -1668,6 +2036,30 @@ def benchmark_oak(
     print(f"\nChargement du dataset {dataset.upper()}...")
     dataset_items = load_coco128_dataset(dataset)
 
+    def _extract_percent(value):
+        if value is None:
+            return None
+        if isinstance(value, (int, float)):
+            return value * 100 if value <= 1 else value
+        for attr in ("average", "usage", "percent", "utilization"):
+            v = getattr(value, attr, None)
+            if isinstance(v, (int, float)):
+                return v * 100 if v <= 1 else v
+        return None
+
+    def _extract_used_mb(mem):
+        if mem is None:
+            return None
+        if isinstance(mem, (int, float)):
+            return mem / (1024 * 1024) if mem > 1024 * 1024 else mem
+        used = getattr(mem, "used", None)
+        total = getattr(mem, "total", None)
+        if isinstance(used, (int, float)):
+            if isinstance(total, (int, float)) and total > 1024 * 1024:
+                return used / (1024 * 1024)
+            return used / (1024 * 1024) if used > 1024 * 1024 else used
+        return None
+
     # Pipeline DepthAI
     pipeline = dai.Pipeline()
 
@@ -1685,6 +2077,13 @@ def benchmark_oak(
     xout.setStreamName("nn")
     nn.out.link(xout.input)
 
+    if monitor_enabled:
+        syslog = pipeline.create(dai.node.SystemLogger)
+        syslog.setRate(max(1, int(round(1000 / monitor_interval_ms))))
+        xout_sys = pipeline.create(dai.node.XLinkOut)
+        xout_sys.setStreamName("sys")
+        syslog.out.link(xout_sys.input)
+
     print("\nInference sur OAK-D...")
     all_predictions = []
     all_ground_truths = []
@@ -1692,6 +2091,10 @@ def benchmark_oak(
     preprocess_times = []
     inference_times = []
     postprocess_times = []
+    monitor_stats = {}
+    oak_leon_css = []
+    oak_ddr_used_mb = []
+    oak_cmx_used_mb = []
 
     with dai.Device(pipeline) as device:
         # TODO (OAK_QUEUE): blocking=False + maxSize=1 = risque de drop/variabilite.
@@ -1701,6 +2104,11 @@ def benchmark_oak(
         #   - Augmenter maxSize > 1 pour eviter les drops
         q_in = device.getInputQueue(name="input", maxSize=1, blocking=False)
         q_out = device.getOutputQueue(name="nn", maxSize=1, blocking=True)
+        q_sys = (
+            device.getOutputQueue(name="sys", maxSize=1, blocking=False)
+            if monitor_enabled
+            else None
+        )
 
         # TODO (PREPROCESS_FAIRNESS): OAK vs GPU/CPU preprocessing mismatch!
         #   GPU/CPU: BGR->RGB, normalize /255, CHW, float16/float32
@@ -1731,6 +2139,10 @@ def benchmark_oak(
             dai_frame.setData(img_chw.reshape(-1))
             q_in.send(dai_frame)
             _ = q_out.get()
+
+        monitor = start_resource_monitor(
+            monitor_enabled, "oak", monitor_interval_ms, monitor_gpu_index
+        )
 
         output_layers = None
         first_frame = True
@@ -1825,6 +2237,54 @@ def benchmark_oak(
             if (i + 1) % 20 == 0:
                 print(f"  {i + 1}/{len(dataset_items)} images...")
 
+            if q_sys:
+                sys = q_sys.tryGet()
+                if sys:
+                    info = sys.getSystemInformation()
+                    leon_css = _extract_percent(
+                        getattr(info, "leonCssCpuUsage", None)
+                    )
+                    ddr_used = _extract_used_mb(
+                        getattr(info, "ddrMemoryUsage", None)
+                    )
+                    cmx_used = _extract_used_mb(
+                        getattr(info, "cmxMemoryUsage", None)
+                    )
+                    if leon_css is not None:
+                        oak_leon_css.append(leon_css)
+                    if ddr_used is not None:
+                        oak_ddr_used_mb.append(ddr_used)
+                    if cmx_used is not None:
+                        oak_cmx_used_mb.append(cmx_used)
+
+        monitor_stats = stop_resource_monitor(monitor)
+
+    def _stats(values):
+        if not values:
+            return None, None, None
+        vals_sorted = sorted(values)
+        mean = sum(values) / len(values)
+        p95 = vals_sorted[int(0.95 * (len(vals_sorted) - 1))]
+        mx = vals_sorted[-1]
+        return mean, p95, mx
+
+    leon_mean, leon_p95, leon_max = _stats(oak_leon_css)
+    ddr_mean, ddr_p95, ddr_max = _stats(oak_ddr_used_mb)
+    cmx_mean, cmx_p95, cmx_max = _stats(oak_cmx_used_mb)
+    monitor_stats.update(
+        {
+            "oak_leon_css_cpu_pct_mean": leon_mean,
+            "oak_leon_css_cpu_pct_p95": leon_p95,
+            "oak_leon_css_cpu_pct_max": leon_max,
+            "oak_ddr_used_mb_mean": ddr_mean,
+            "oak_ddr_used_mb_p95": ddr_p95,
+            "oak_ddr_used_mb_max": ddr_max,
+            "oak_cmx_used_mb_mean": cmx_mean,
+            "oak_cmx_used_mb_p95": cmx_p95,
+            "oak_cmx_used_mb_max": cmx_max,
+        }
+    )
+
     print("\nCalcul des metriques...")
     metrics = compute_map50_prf1(
         all_predictions, all_ground_truths, conf_op=CONF_OP, iou_thr=MATCH_IOU
@@ -1880,6 +2340,7 @@ def benchmark_oak(
         inference_ms=timing["inference_ms"],
         postprocess_ms=timing["postprocess_ms"],
         fps=timing["fps"],
+        monitor_stats=monitor_stats,
     )
 
 
@@ -1888,7 +2349,14 @@ def benchmark_oak(
 # =============================================================================
 
 
-def benchmark_orin(model_path: str, num_classes: int, dataset: str = "coco128"):
+def benchmark_orin(
+    model_path: str,
+    num_classes: int,
+    dataset: str = "coco128",
+    monitor_enabled: bool = False,
+    monitor_interval_ms: int = 500,
+    monitor_gpu_index: int = 0,
+):
     """
     Benchmark sur Jetson Orin (TensorRT ENGINE).
 
@@ -1925,17 +2393,44 @@ def benchmark_orin(model_path: str, num_classes: int, dataset: str = "coco128"):
     if use_trt_api:
         # TensorRT Python API - meme postprocess que OAK
         _benchmark_orin_trt(
-            model_path, num_classes, imgsz, dataset_items, model_name, size_mb, dataset
+            model_path,
+            num_classes,
+            imgsz,
+            dataset_items,
+            model_name,
+            size_mb,
+            dataset,
+            monitor_enabled,
+            monitor_interval_ms,
+            monitor_gpu_index,
         )
     else:
         # Fallback Ultralytics
         _benchmark_orin_ultralytics(
-            model_path, num_classes, imgsz, dataset_items, model_name, size_mb, dataset
+            model_path,
+            num_classes,
+            imgsz,
+            dataset_items,
+            model_name,
+            size_mb,
+            dataset,
+            monitor_enabled,
+            monitor_interval_ms,
+            monitor_gpu_index,
         )
 
 
 def _benchmark_orin_trt(
-    model_path, num_classes, imgsz, dataset_items, model_name, size_mb, dataset
+    model_path,
+    num_classes,
+    imgsz,
+    dataset_items,
+    model_name,
+    size_mb,
+    dataset,
+    monitor_enabled: bool = False,
+    monitor_interval_ms: int = 500,
+    monitor_gpu_index: int = 0,
 ):
     """Benchmark Orin avec TensorRT Python API (meme postprocess que OAK)."""
     import pycuda.driver as cuda
@@ -2020,6 +2515,10 @@ def _benchmark_orin_trt(
         cuda.memcpy_htod_async(d_input, img_batch, stream)
         context.execute_async_v2(bindings, stream.handle)
         stream.synchronize()
+
+    monitor = start_resource_monitor(
+        monitor_enabled, "orin", monitor_interval_ms, monitor_gpu_index
+    )
 
     print("\nInference...")
     all_predictions = []
@@ -2115,6 +2614,8 @@ def _benchmark_orin_trt(
         if (idx + 1) % 20 == 0:
             print(f"  {idx + 1}/{len(dataset_items)} images...")
 
+    monitor_stats = stop_resource_monitor(monitor)
+
     print("\nCalcul des metriques...")
     metrics = compute_map50_prf1(
         all_predictions, all_ground_truths, conf_op=CONF_OP, iou_thr=MATCH_IOU
@@ -2165,11 +2666,21 @@ def _benchmark_orin_trt(
         inference_ms=timing["inference_ms"],
         postprocess_ms=timing["postprocess_ms"],
         fps=timing["fps"],
+        monitor_stats=monitor_stats,
     )
 
 
 def _benchmark_orin_ultralytics(
-    model_path, num_classes, imgsz, dataset_items, model_name, size_mb, dataset
+    model_path,
+    num_classes,
+    imgsz,
+    dataset_items,
+    model_name,
+    size_mb,
+    dataset,
+    monitor_enabled: bool = False,
+    monitor_interval_ms: int = 500,
+    monitor_gpu_index: int = 0,
 ):
     """Fallback: Benchmark Orin avec Ultralytics (postprocess different)."""
     import torch
@@ -2203,6 +2714,10 @@ def _benchmark_orin_ultralytics(
             _ = model.predict(
                 img_lb, imgsz=imgsz, conf=CONF_EVAL, device=0, verbose=False, half=True
             )
+
+    monitor = start_resource_monitor(
+        monitor_enabled, "orin", monitor_interval_ms, monitor_gpu_index
+    )
 
     print("\nInference...")
     all_predictions = []
@@ -2293,6 +2808,8 @@ def _benchmark_orin_ultralytics(
             if (idx + 1) % 20 == 0:
                 print(f"  {idx + 1}/{len(dataset_items)} images...")
 
+    monitor_stats = stop_resource_monitor(monitor)
+
     print("\nCalcul des metriques...")
     metrics = compute_map50_prf1(
         all_predictions, all_ground_truths, conf_op=CONF_OP, iou_thr=MATCH_IOU
@@ -2343,6 +2860,7 @@ def _benchmark_orin_ultralytics(
         inference_ms=timing["inference_ms"],
         postprocess_ms=timing["postprocess_ms"],
         fps=timing["fps"],
+        monitor_stats=monitor_stats,
     )
 
 
@@ -2422,6 +2940,23 @@ def main():
         metavar="[4-8]",
         help="Nombre de shaves pour OAK (4-8). Si fourni, selectionne le blob *_{shaves}shave.blob",
     )
+    parser.add_argument(
+        "--monitor",
+        action="store_true",
+        help="Activer le monitoring des ressources (CPU/RAM/GPU)",
+    )
+    parser.add_argument(
+        "--monitor-interval-ms",
+        type=int,
+        default=500,
+        help="Intervalle d'echantillonnage du monitoring (ms)",
+    )
+    parser.add_argument(
+        "--monitor-gpu",
+        type=int,
+        default=0,
+        help="Index GPU pour nvidia-smi (defaut: 0)",
+    )
 
     args = parser.parse_args()
 
@@ -2472,9 +3007,19 @@ def main():
                 args.num_classes,
                 args.dataset,
                 ort_opt_level=args.ort_opt_level,
+                monitor_enabled=args.monitor,
+                monitor_interval_ms=args.monitor_interval_ms,
+                monitor_gpu_index=args.monitor_gpu,
             )
         else:
-            benchmark_gpu_ultralytics(model_path, args.num_classes, args.dataset)
+            benchmark_gpu_ultralytics(
+                model_path,
+                args.num_classes,
+                args.dataset,
+                monitor_enabled=args.monitor,
+                monitor_interval_ms=args.monitor_interval_ms,
+                monitor_gpu_index=args.monitor_gpu,
+            )
     elif args.target == "cpu":
         benchmark_cpu_ort(
             model_path,
@@ -2483,6 +3028,9 @@ def main():
             host_tag=args.host_tag,
             cpu_threads=args.cpu_threads,
             cpu_execution_mode=args.cpu_execution_mode,
+            monitor_enabled=args.monitor,
+            monitor_interval_ms=args.monitor_interval_ms,
+            monitor_gpu_index=args.monitor_gpu,
         )
     elif args.target == "oak":
         benchmark_oak(
@@ -2490,9 +3038,19 @@ def main():
             args.num_classes,
             args.dataset,
             host_tag=args.host_tag,
+            monitor_enabled=args.monitor,
+            monitor_interval_ms=args.monitor_interval_ms,
+            monitor_gpu_index=args.monitor_gpu,
         )
     elif args.target == "orin":
-        benchmark_orin(model_path, args.num_classes, args.dataset)
+        benchmark_orin(
+            model_path,
+            args.num_classes,
+            args.dataset,
+            monitor_enabled=args.monitor,
+            monitor_interval_ms=args.monitor_interval_ms,
+            monitor_gpu_index=args.monitor_gpu,
+        )
 
     return 0
 
