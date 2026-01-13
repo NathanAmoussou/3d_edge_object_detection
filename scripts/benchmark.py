@@ -2238,9 +2238,13 @@ def benchmark_oak(
                 print(f"  {i + 1}/{len(dataset_items)} images...")
 
             if q_sys:
-                sys = q_sys.tryGet()
-                if sys:
-                    info = sys.getSystemInformation()
+                sysinfo = q_sys.tryGet()
+                if sysinfo:
+                    info = (
+                        sysinfo.getSystemInformation()
+                        if hasattr(sysinfo, "getSystemInformation")
+                        else sysinfo
+                    )
                     leon_css = _extract_percent(
                         getattr(info, "leonCssCpuUsage", None)
                     )
