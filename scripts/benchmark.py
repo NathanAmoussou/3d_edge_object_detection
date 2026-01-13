@@ -10,8 +10,8 @@ Usage:
     python scripts/benchmark.py --target cpu --model models/variants/yolo11n_320_fp32.onnx --host-tag PI4 --cpu-threads 4
 
     # OAK-D (Myriad X VPU)
-    python scripts/benchmark.py --target oak --model models/oak/yolo11n_640_fp16.blob --host-tag PC
-    python scripts/benchmark.py --target oak --model models/oak/yolo11n_640_fp16.blob --host-tag PI4
+    python scripts/benchmark.py --target oak --model models/oak/yolo11n_640_fp16_6shave.blob --host-tag PC
+    python scripts/benchmark.py --target oak --model models/oak/yolo11n_640_fp16 --shaves 8 --host-tag PI4
 
     # Jetson Orin
     python scripts/benchmark.py --target orin --model models/orin/yolo11n_640_fp16.engine --num-classes 80
@@ -25,6 +25,7 @@ Options:
     --host-tag TAG             : Tag identifiant le host (ex: PC, PI4). Auto-detecte si non fourni.
     --cpu-threads N            : Nombre de threads intra-op pour inference CPU (defaut: auto)
     --cpu-execution-mode       : Mode d'execution ORT CPU: sequential ou parallel (defaut: sequential)
+    --shaves N                 : Nombre de shaves OAK (4-8) (auto-complete le nom du blob: *_{N}shave.blob)
 
 ===============================================================================
 DECISIONS DE CONCEPTION - EQUITE MULTI-HARDWARE
@@ -92,6 +93,7 @@ import argparse
 import csv
 import json
 import os
+import re
 import time
 from datetime import datetime
 from pathlib import Path
@@ -1851,8 +1853,10 @@ def benchmark_oak(
     print(f"Recall              : {metrics['recall']:.4f}")
     print(f"F1-Score            : {metrics['f1']:.4f}")
 
-    # Hardware tag: OAK_MyriadX_HOST_{host_tag}
-    hardware = f"OAK_MyriadX_HOST_{host_tag}"
+    # Hardware tag: OAK_MyriadX_HOST_{host_tag}[_SHAVES_N]
+    shaves_match = re.search(r"_(\d+)shave$", model_name)
+    shaves_tag = f"_SHAVES_{shaves_match.group(1)}" if shaves_match else ""
+    hardware = f"OAK_MyriadX_HOST_{host_tag}{shaves_tag}"
 
     save_results(
         hardware=hardware,
@@ -2410,16 +2414,41 @@ def main():
         choices=["sequential", "parallel"],
         help="Mode d'execution ONNX Runtime CPU: sequential ou parallel (defaut: sequential)",
     )
+    parser.add_argument(
+        "--shaves",
+        type=int,
+        default=None,
+        choices=range(4, 9),
+        metavar="[4-8]",
+        help="Nombre de shaves pour OAK (4-8). Si fourni, selectionne le blob *_{shaves}shave.blob",
+    )
 
     args = parser.parse_args()
 
     # Resoudre le chemin
     model_path = Path(args.model)
+
+    # Pour OAK avec --shaves: construire le chemin du blob automatiquement
+    # Ex: --model models/oak/yolo11n_640_fp16 --shaves 8 -> yolo11n_640_fp16_8shave.blob
+    # TODO: gerer le cas --model deja suffixe "_6shave" sans extension pour eviter "_6shave_8shave.blob".
+    if args.target == "oak" and args.shaves is not None:
+        s = str(model_path)
+        if s.endswith(".blob"):
+            # Remplace le suffixe _{N}shave.blob si present, sinon ajoute _{N}shave.
+            base = re.sub(r"_\d+shave\.blob$", "", s)
+            if base == s:
+                base = s[: -len(".blob")]
+            model_path = Path(f"{base}_{args.shaves}shave.blob")
+        else:
+            model_path = Path(f"{s}_{args.shaves}shave.blob")
+
     if not model_path.exists():
-        model_path = ROOT_DIR / args.model
+        model_path = ROOT_DIR / model_path
 
     if not model_path.exists():
         print(f"Erreur: Modele introuvable: {args.model}")
+        if args.shaves:
+            print(f"  (avec --shaves {args.shaves}, chemin tente: {model_path})")
         return 1
 
     model_path = str(model_path.resolve())
