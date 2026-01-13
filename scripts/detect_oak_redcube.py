@@ -1,11 +1,39 @@
 """
 Launches YOLOv11 on the OAK D PRO Camera.
+
+Supports headless mode (no display) for embedded systems like Raspberry Pi.
+In headless mode, prints detection results (detected, x, y, z) to stdout.
 """
 
 from pathlib import Path
+import os
 import cv2
 import depthai as dai
 import numpy as np
+
+
+def is_headless() -> bool:
+    """
+    Detecte si on est en mode headless (pas de display disponible).
+
+    Returns:
+        True si pas de display, False sinon.
+    """
+    # Methode 1: Verifier DISPLAY (Linux/X11)
+    display = os.environ.get("DISPLAY")
+    if display is None or display == "":
+        return True
+
+    # Methode 2: Essayer d'ouvrir une fenetre OpenCV (plus robuste)
+    try:
+        test_img = np.zeros((1, 1, 3), dtype=np.uint8)
+        cv2.imshow("__test__", test_img)
+        cv2.waitKey(1)
+        cv2.destroyWindow("__test__")
+        return False
+    except cv2.error:
+        return True
+
 
 # --- Configuration ---
 BLOB_PATH = Path(__file__).parent.parent / "models/red_cube_01/best_openvino_2022.1_6shave.blob"
@@ -144,57 +172,131 @@ def get_object_depth(depth_frame, box, scale_x, scale_y):
 
 
 # --- Boucle Principale ---
-with dai.Device(pipeline) as device:
-    q_rgb = device.getOutputQueue(name="rgb", maxSize=4, blocking=False)
-    q_nn = device.getOutputQueue(name="nn", maxSize=4, blocking=False)
-    q_depth = device.getOutputQueue(name="depth", maxSize=4, blocking=False)
+def main():
+    """
+    Boucle principale de detection.
 
-    frame = None
-    depth_frame = None
+    En mode headless (pas de display), retourne les resultats sous forme:
+        detected: bool, x: float, y: float, z: float
 
-    while True:
-        in_rgb = q_rgb.tryGet()
-        in_nn = q_nn.tryGet()
-        in_depth = q_depth.tryGet()
+    x, y sont les coordonnees normalisees (0-1) du centre de la detection.
+    z est la distance en metres.
+    """
+    headless = is_headless()
 
-        if in_rgb is not None:
-            frame = in_rgb.getCvFrame()
+    if headless:
+        print("[INFO] Mode headless detecte - pas d'affichage")
+        print("[INFO] Format sortie: detected,x,y,z")
+    else:
+        print("[INFO] Mode display actif")
 
-        if in_depth is not None:
-            depth_frame = in_depth.getFrame() # Format uint16 en millimètres
+    with dai.Device(pipeline) as device:
+        q_rgb = device.getOutputQueue(name="rgb", maxSize=4, blocking=False)
+        q_nn = device.getOutputQueue(name="nn", maxSize=4, blocking=False)
+        q_depth = device.getOutputQueue(name="depth", maxSize=4, blocking=False)
 
-        if in_nn is not None and frame is not None:
-            output_layers = in_nn.getAllLayerNames()
-            raw_data = in_nn.getLayerFp16(output_layers[0])
-            
-            boxes, scores, class_ids = decode_yolo_v11(raw_data, CONF_THRESHOLD, IOU_THRESHOLD)
-            
-            h, w = frame.shape[:2]
-            scale_x = w / INPUT_SIZE
-            scale_y = h / INPUT_SIZE
-            
-            for i in range(len(boxes)):
-                box = boxes[i] # [x, y, w, h] brut (INPUT_SIZE px)
-                
-                # Calcul de la distance si la frame de profondeur est dispo
-                distance_mm = 0
-                if depth_frame is not None:
-                    distance_mm = get_object_depth(depth_frame, box, scale_x, scale_y)
-                
-                # Coordonnées pour l'affichage RGB
-                x_disp = int(box[0] * scale_x)
-                y_disp = int(box[1] * scale_y)
-                bw_disp = int(box[2] * scale_x)
-                bh_disp = int(box[3] * scale_y)
-                
-                # Texte : Classe + Confiance + Distance
-                dist_str = f"{distance_mm/1000:.2f}m" if distance_mm > 0 else "??"
-                label = f"{CLASS_NAME} {scores[i]:.2f} [{dist_str}]"
-                
-                cv2.rectangle(frame, (x_disp, y_disp), (x_disp + bw_disp, y_disp + bh_disp), (0, 255, 0), 2)
-                cv2.putText(frame, label, (x_disp, y_disp - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+        frame = None
+        depth_frame = None
 
-            cv2.imshow("OAK-D YOLOv11 + Depth", frame)
+        try:
+            while True:
+                in_rgb = q_rgb.tryGet()
+                in_nn = q_nn.tryGet()
+                in_depth = q_depth.tryGet()
 
-        if cv2.waitKey(1) == ord('q'):
-            break
+                if in_rgb is not None:
+                    frame = in_rgb.getCvFrame()
+
+                if in_depth is not None:
+                    depth_frame = in_depth.getFrame()  # Format uint16 en millimètres
+
+                if in_nn is not None and frame is not None:
+                    output_layers = in_nn.getAllLayerNames()
+                    raw_data = in_nn.getLayerFp16(output_layers[0])
+
+                    boxes, scores, class_ids = decode_yolo_v11(
+                        raw_data, CONF_THRESHOLD, IOU_THRESHOLD
+                    )
+
+                    h, w = frame.shape[:2]
+                    scale_x = w / INPUT_SIZE
+                    scale_y = h / INPUT_SIZE
+
+                    if headless:
+                        # --- Mode headless: retourne detected, x, y, z ---
+                        if len(boxes) > 0:
+                            # Prendre la detection avec le score le plus eleve
+                            best_idx = np.argmax(scores)
+                            box = boxes[best_idx]
+
+                            # Centre de la bbox normalise (0-1)
+                            cx = (box[0] + box[2] / 2) / INPUT_SIZE
+                            cy = (box[1] + box[3] / 2) / INPUT_SIZE
+
+                            # Distance Z en metres
+                            z_mm = 0
+                            if depth_frame is not None:
+                                z_mm = get_object_depth(
+                                    depth_frame, box, scale_x, scale_y
+                                )
+                            z_m = z_mm / 1000.0 if z_mm > 0 else 0.0
+
+                            print(f"True,{cx:.4f},{cy:.4f},{z_m:.3f}")
+                        else:
+                            print("False,0,0,0")
+                    else:
+                        # --- Mode display: affichage OpenCV ---
+                        for i in range(len(boxes)):
+                            box = boxes[i]  # [x, y, w, h] brut (INPUT_SIZE px)
+
+                            # Calcul de la distance si la frame de profondeur est dispo
+                            distance_mm = 0
+                            if depth_frame is not None:
+                                distance_mm = get_object_depth(
+                                    depth_frame, box, scale_x, scale_y
+                                )
+
+                            # Coordonnées pour l'affichage RGB
+                            x_disp = int(box[0] * scale_x)
+                            y_disp = int(box[1] * scale_y)
+                            bw_disp = int(box[2] * scale_x)
+                            bh_disp = int(box[3] * scale_y)
+
+                            # Texte : Classe + Confiance + Distance
+                            dist_str = (
+                                f"{distance_mm/1000:.2f}m" if distance_mm > 0 else "??"
+                            )
+                            label = f"{CLASS_NAME} {scores[i]:.2f} [{dist_str}]"
+
+                            cv2.rectangle(
+                                frame,
+                                (x_disp, y_disp),
+                                (x_disp + bw_disp, y_disp + bh_disp),
+                                (0, 255, 0),
+                                2,
+                            )
+                            cv2.putText(
+                                frame,
+                                label,
+                                (x_disp, y_disp - 10),
+                                cv2.FONT_HERSHEY_SIMPLEX,
+                                0.5,
+                                (0, 255, 0),
+                                2,
+                            )
+
+                        cv2.imshow("OAK-D YOLOv11 + Depth", frame)
+
+                if not headless and cv2.waitKey(1) == ord("q"):
+                    break
+
+        except KeyboardInterrupt:
+            print("\n[INFO] Arret demande (Ctrl+C)")
+
+        finally:
+            if not headless:
+                cv2.destroyAllWindows()
+
+
+if __name__ == "__main__":
+    main()
