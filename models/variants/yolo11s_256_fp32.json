@@ -10,7 +10,7 @@
   "nms": false,
   "size_mb": 36.12,
   "ultralytics_version": "8.3.241",
-  "torch_version": "2.8.0+cu128",
+  "torch_version": "2.9.1+cu128",
   "cuda_available": true,
-  "generated_at": "2025-12-29T14:28:30.738981"
+  "generated_at": "2026-01-13T21:35:02.804500"
 }

@@ -59,36 +59,37 @@ for d in distillation_bins:
 ```
 if hardware == "4070": # onnx runtime
 	elagage_bins = [yolo11m, yolo11s, yolo11n]
-	quantification_bins = [fp32, fp16, int8]
+	quantification_bins = [fp32, fp16, int8] # pas d'int8, fonctionne pas
 	resolution_bins = [640, 512, 416, 320, 256]
-	fusion_bins = [ORT_ENABLE_ALL, ORT_ENABLE_BASIC, ORT_DISABLE_ALL]
+	fusion_bins = [ORT_ENABLE_ALL, ORT_ENABLE_BASIC, ORT_DISABLE_ALL] # runtime
 	
-	nb_variantes = 3 * 3 * 5 * 3 = 135
+	nb_variantes = 3 * 2 * 5 * 3 = 90
 
 if hardware == "oak": # depthai runtime
 	elagage_bins = [yolo11m, yolo11s, yolo11n]
 	quantification_bins = [fp16]
 	resolution_bins = [640, 512, 416, 320, 256]
 	shaves_bins = [4, 5, 6, 7, 8]
-	fusion_bins = [False, True]
+	fusion_bins = [False, True] # pas fait
 	
-	nb_variantes = 3 * 1 * 5 * 5 * 2 = 150
+	nb_variantes = 3 * 1 * 5 * 5 = 75
 
 if hardware == "orin":
 	elagage_bins = [yolo11m, yolo11s, yolo11n]
-	quantification_bins = [fp32, fp16, int8]
+	quantification_bins = [fp32, fp16, int8] #pas de int8
 	resolution_bins = [640, 512, 416, 320, 256]
 	
 	if runtime == "ort":
 		fusion_bins = [ORT_ENABLE_ALL, ORT_ENABLE_BASIC, ORT_DISABLE_ALL]
 		
-		nb_variantes = 3 * 3 * 5 * 3 = 135
+		nb_variantes = 3 * 2 * 5 * 3 = 90
 	
 	elif runtime == "trt":
+		quantification_bins += [int8] #pas de int8
 		optim_bins = [3, 4, 5]
 		sparsity = [False, True]
 		
-		nb_variantes = 3 * 3 * 5 * 2 * 2 = 180
+		nb_variantes = 3 * 2 * 5 * 3 * 2 = 180
 ```
 ## Point de départ de chaque *hardware*
 

@@ -19,3 +19,12 @@ notebooks/runs/
 # OS
 .DS_Store
 Thumbs.db
+
+# Other
+archive/
+cours/
+models/base/
+models/orin/
+models/oak/
+models/transformed/
+models/variants/

@@ -11,11 +11,13 @@ Total: 3 x 2 x 5 = 30 variantes ONNX
 Note: INT8 n'est pas supporte pour l'export ONNX direct par Ultralytics.
       Il faudrait utiliser onnxruntime.quantization apres l'export (a faire separement).
 
-Usage:
-    python generate_variants.py
-    python generate_variants.py --output ../models/variants/
-    python generate_variants.py --dry-run
-    python generate_variants.py --models n s --resolutions 640 320
+Main usage:
+    To generate all 30 yolo11{m,n,s}_{640,512,416,320,256}_fp{32,16}.onnx variants:
+        python scripts/generate_variants.py
+Options (debug only):
+    python scripts/generate_variants.py --output ../models/variants/
+    python scripts/generate_variants.py --dry-run
+    python scripts/generate_variants.py --models n s --resolutions 640 320
 """
 
 import argparse
