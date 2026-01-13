@@ -7,12 +7,19 @@ et compile vers le format natif de chaque hardware.
 Usage:
     python compile.py --target 4070 --model models/variants/yolo11n_640_fp16.onnx
     python compile.py --target oak --model models/variants/yolo11n_640_fp16.onnx
+    python compile.py --target oak --model models/variants/yolo11n_640_fp16.onnx --shaves 8
+    python compile.py --target oak --model models/variants/yolo11n_640_fp16.onnx --shaves 4 5 6 7 8
     python compile.py --target orin --model models/variants/yolo11n_640_fp16.onnx
 
 Targets:
     - 4070/cpu: Retourne l'ONNX tel quel (inference via ONNX Runtime)
-    - oak: Compile ONNX -> BLOB (Myriad X, FP16)
+    - oak: Compile ONNX -> BLOB (Myriad X, FP16, shaves configurable)
     - orin: Compile ONNX -> ENGINE (TensorRT, sur Jetson)
+
+OAK Shaves:
+    Le nombre de SHAVE cores est un parametre de compilation (pas modifiable a runtime).
+    RVC2 a 16 SHAVEs. Luxonis recommande 8 shaves avec 2 NN threads.
+    Generer plusieurs blobs pour benchmark: --shaves 4 5 6 7 8
 
 TODO (Phase 4): Metadata preservation
     - Copier/enrichir le .json du modele source vers l'artefact compile (.blob, .engine)
@@ -128,13 +135,18 @@ def compile_for_gpu(onnx_path: str, output_dir: str) -> str:
     return str(target_path)
 
 
-def compile_for_oak(onnx_path: str, output_dir: str) -> str:
+def compile_for_oak(onnx_path: str, output_dir: str, shaves: int = 6) -> str:
     """
     Compile ONNX -> BLOB pour OAK-D (Myriad X VPU).
     Utilise blobconverter avec les memes parametres que le preprocess OAK.
 
     IMPORTANT: Les modeles _ortopt_* ne sont PAS supportes car ils peuvent
     contenir des ops internes ORT non portables vers OpenVINO.
+
+    Args:
+        shaves: Nombre de SHAVE cores a utiliser (4-8, defaut: 6).
+                RVC2 a 16 SHAVEs, Luxonis recommande 8 shaves avec 2 NN threads.
+                Le nombre de shaves est fixe a la compilation, pas modifiable a runtime.
     """
     import blobconverter
 
@@ -193,13 +205,13 @@ def compile_for_oak(onnx_path: str, output_dir: str) -> str:
     # IMPORTANT: Ces parametres doivent matcher le benchmark OAK
     # - reverse_input_channels: BGR -> RGB (Ultralytics attend RGB)
     # - scale 255: normalisation 0-255 -> 0-1 (fait dans le blob)
-    print("\nConversion blob (FP16, 6 shaves, preprocess integre)...")
+    print(f"\nConversion blob (FP16, {shaves} shaves, preprocess integre)...")
     os.makedirs(output_dir, exist_ok=True)
 
     blob_path = blobconverter.from_onnx(
         model=str(onnx_path),
         data_type="FP16",
-        shaves=6,
+        shaves=shaves,
         output_dir=output_dir,
         optimizer_params=[
             "--reverse_input_channels",  # BGR -> RGB
@@ -208,16 +220,57 @@ def compile_for_oak(onnx_path: str, output_dir: str) -> str:
         ],
     )
 
+    # Renommer le blob pour inclure le nombre de shaves
+    # Format: yolo11n_640_fp16_6shave.blob
+    blob_path = Path(blob_path)
+    new_name = f"{onnx_path.stem}_{shaves}shave.blob"
+    new_blob_path = blob_path.parent / new_name
+
+    if blob_path != new_blob_path:
+        blob_path.rename(new_blob_path)
+        blob_path = new_blob_path
+
     size_mb = os.path.getsize(blob_path) / (1024 * 1024)
 
     print("\n" + "-" * 40)
     print("COMPILATION TERMINEE")
     print("-" * 40)
-    print("Format : OpenVINO blob (FP16)")
+    print(f"Format : OpenVINO blob (FP16, {shaves} shaves)")
     print(f"Fichier: {blob_path}")
     print(f"Taille : {size_mb:.2f} MB")
 
-    return blob_path
+    return str(blob_path)
+
+
+def compile_for_oak_sweep(
+    onnx_path: str,
+    output_dir: str,
+    shaves_list: list[int],
+    skip_existing: bool = False,
+) -> list[str]:
+    """
+    Compile plusieurs blobs OAK pour une liste de shaves.
+    """
+    generated = []
+    onnx_path_p = Path(onnx_path)
+
+    for s in shaves_list:
+        expected = Path(output_dir) / f"{onnx_path_p.stem}_{s}shave.blob"
+        if skip_existing and expected.exists():
+            print(f"[SKIP] {expected.name} (existe deja)")
+            generated.append(str(expected))
+            continue
+
+        out = compile_for_oak(onnx_path, output_dir, shaves=s)
+        generated.append(out)
+
+    print("\n" + "-" * 40)
+    print("OAK SWEEP TERMINE")
+    print("-" * 40)
+    print(f"Shaves : {shaves_list}")
+    print(f"Sortie : {output_dir}")
+    print(f"Blobs  : {len(generated)}")
+    return generated
 
 
 def compile_for_orin(
@@ -401,6 +454,23 @@ def main():
         default=4096,
         help="Workspace TensorRT en MB pour Orin (defaut: 4096). Reduire si RAM limitee.",
     )
+    parser.add_argument(
+        "--shaves",
+        type=int,
+        nargs="+",
+        default=[6],
+        choices=range(1, 17),
+        metavar="[1-16]",
+        help=(
+            "SHAVEs OAK. Accepte une liste: --shaves 4 5 6 7 8 "
+            "(defaut: 6)."
+        ),
+    )
+    parser.add_argument(
+        "--skip-existing",
+        action="store_true",
+        help="Ne pas regenerer si l'artefact de sortie existe deja.",
+    )
 
     args = parser.parse_args()
 
@@ -426,7 +496,21 @@ def main():
     if args.target in ["4070", "cpu"]:
         output_path = compile_for_gpu(model_path, output_dir)
     elif args.target == "oak":
-        output_path = compile_for_oak(model_path, output_dir)
+        if len(args.shaves) == 1:
+            output_path = compile_for_oak(
+                model_path, output_dir, shaves=args.shaves[0]
+            )
+        else:
+            compile_for_oak_sweep(
+                model_path,
+                output_dir,
+                shaves_list=args.shaves,
+                skip_existing=args.skip_existing,
+            )
+            output_path = str(
+                Path(output_dir)
+                / f"{Path(model_path).stem}_{args.shaves[-1]}shave.blob"
+            )
     elif args.target == "orin":
         output_path = compile_for_orin(
             model_path, output_dir, fp16=not args.fp32, workspace_mb=args.workspace
