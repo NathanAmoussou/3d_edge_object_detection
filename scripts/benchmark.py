@@ -33,6 +33,9 @@ Options:
     --cpu-threads N            : Nombre de threads intra-op pour inference CPU (defaut: auto)
     --cpu-execution-mode       : Mode d'execution ORT CPU: sequential ou parallel (defaut: sequential)
     --shaves N                 : Nombre de shaves OAK (4-8) (auto-complete le nom du blob: *_{N}shave.blob)
+    --repeat N                 : Nombre de repetitions par run (defaut: 1)
+    --idle-seconds N           : Duree baseline idle avant run/sweep (defaut: 3s)
+    --idle-sample-hz N         : Frequence sampling baseline idle (defaut: 2 Hz)
     --monitor                  : Activer le monitoring CPU/RAM/GPU (psutil + nvidia-smi/tegrastats)
     --no-monitor               : Desactiver le monitoring (defaut auto pour 4070/oak)
     --monitor-interval-ms N    : Intervalle d'echantillonnage (defaut: 500ms)
@@ -259,6 +262,9 @@ def benchmark_gpu_ort_sweep(
     monitor_interval_ms: int,
     monitor_gpu_index: int,
     monitor_target: str = "4070",
+    repeat: int = 1,
+    idle_seconds: int = 0,
+    idle_sample_hz: int = 2,
 ) -> int:
     if not variants_dir.exists():
         print(f"Erreur: Dossier variantes introuvable: {variants_dir}")
@@ -277,26 +283,33 @@ def benchmark_gpu_ort_sweep(
     print(f"Quantifs  : {', '.join(DEFAULT_SWEEP_QUANTS)}")
     print(f"ORT levels: {', '.join(DEFAULT_SWEEP_ORT_LEVELS)}")
 
+    idle_state = {"done": False}
     for model_path in get_default_variant_paths(variants_dir):
         if not model_path.exists():
             print(f"[SKIP] {model_path} (introuvable)")
             missing += 1
             continue
         for ort_level in DEFAULT_SWEEP_ORT_LEVELS:
-            total_runs += 1
+            total_runs += repeat
             print("\n" + "-" * 40)
             print(f"[SWEEP] {model_path.name} | ORT={ort_level.upper()}")
             print("-" * 40)
-            benchmark_gpu_ort(
-                str(model_path),
-                num_classes,
-                dataset,
-                ort_opt_level=ort_level,
-                monitor_enabled=monitor_enabled,
-                monitor_interval_ms=monitor_interval_ms,
-                monitor_gpu_index=monitor_gpu_index,
-                monitor_target=monitor_target,
-            )
+            for rep in range(repeat):
+                if repeat > 1:
+                    print(f"[REPEAT] {rep + 1}/{repeat}")
+                benchmark_gpu_ort(
+                    str(model_path),
+                    num_classes,
+                    dataset,
+                    ort_opt_level=ort_level,
+                    monitor_enabled=monitor_enabled,
+                    monitor_interval_ms=monitor_interval_ms,
+                    monitor_gpu_index=monitor_gpu_index,
+                    monitor_target=monitor_target,
+                    idle_state=idle_state,
+                    idle_seconds=idle_seconds,
+                    idle_sample_hz=idle_sample_hz,
+                )
 
     print("\n" + "=" * 60)
     print("SWEEP TERMINE")
@@ -318,6 +331,9 @@ def benchmark_cpu_ort_sweep(
     monitor_enabled: bool,
     monitor_interval_ms: int,
     monitor_gpu_index: int,
+    repeat: int = 1,
+    idle_seconds: int = 0,
+    idle_sample_hz: int = 2,
 ) -> int:
     if not variants_dir.exists():
         print(f"Erreur: Dossier variantes introuvable: {variants_dir}")
@@ -336,28 +352,35 @@ def benchmark_cpu_ort_sweep(
     print(f"Quantifs  : {', '.join(DEFAULT_SWEEP_QUANTS)}")
     print(f"ORT levels: {', '.join(DEFAULT_SWEEP_ORT_LEVELS)}")
 
+    idle_state = {"done": False}
     for model_path in get_default_variant_paths(variants_dir):
         if not model_path.exists():
             print(f"[SKIP] {model_path} (introuvable)")
             missing += 1
             continue
         for ort_level in DEFAULT_SWEEP_ORT_LEVELS:
-            total_runs += 1
+            total_runs += repeat
             print("\n" + "-" * 40)
             print(f"[SWEEP] {model_path.name} | ORT={ort_level.upper()}")
             print("-" * 40)
-            benchmark_cpu_ort(
-                str(model_path),
-                num_classes,
-                dataset,
-                host_tag=host_tag,
-                cpu_threads=cpu_threads,
-                cpu_execution_mode=cpu_execution_mode,
-                ort_opt_level=ort_level,
-                monitor_enabled=monitor_enabled,
-                monitor_interval_ms=monitor_interval_ms,
-                monitor_gpu_index=monitor_gpu_index,
-            )
+            for rep in range(repeat):
+                if repeat > 1:
+                    print(f"[REPEAT] {rep + 1}/{repeat}")
+                benchmark_cpu_ort(
+                    str(model_path),
+                    num_classes,
+                    dataset,
+                    host_tag=host_tag,
+                    cpu_threads=cpu_threads,
+                    cpu_execution_mode=cpu_execution_mode,
+                    ort_opt_level=ort_level,
+                    monitor_enabled=monitor_enabled,
+                    monitor_interval_ms=monitor_interval_ms,
+                    monitor_gpu_index=monitor_gpu_index,
+                    idle_state=idle_state,
+                    idle_seconds=idle_seconds,
+                    idle_sample_hz=idle_sample_hz,
+                )
 
     print("\n" + "=" * 60)
     print("SWEEP TERMINE")
@@ -384,6 +407,9 @@ def benchmark_oak_sweep(
     monitor_enabled: bool,
     monitor_interval_ms: int,
     monitor_gpu_index: int,
+    repeat: int = 1,
+    idle_seconds: int = 0,
+    idle_sample_hz: int = 2,
 ) -> int:
     blob_paths = sorted(models_dir.glob("*.blob"))
     if not blob_paths:
@@ -396,19 +422,26 @@ def benchmark_oak_sweep(
     print(f"Modeles  : {models_dir}")
     print(f"Blobs    : {len(blob_paths)}")
 
+    idle_state = {"done": False}
     for blob_path in blob_paths:
         print("\n" + "-" * 40)
         print(f"[SWEEP] {blob_path.name}")
         print("-" * 40)
-        benchmark_oak(
-            str(blob_path),
-            num_classes,
-            dataset,
-            host_tag=host_tag,
-            monitor_enabled=monitor_enabled,
-            monitor_interval_ms=monitor_interval_ms,
-            monitor_gpu_index=monitor_gpu_index,
-        )
+        for rep in range(repeat):
+            if repeat > 1:
+                print(f"[REPEAT] {rep + 1}/{repeat}")
+            benchmark_oak(
+                str(blob_path),
+                num_classes,
+                dataset,
+                host_tag=host_tag,
+                monitor_enabled=monitor_enabled,
+                monitor_interval_ms=monitor_interval_ms,
+                monitor_gpu_index=monitor_gpu_index,
+                idle_state=idle_state,
+                idle_seconds=idle_seconds,
+                idle_sample_hz=idle_sample_hz,
+            )
 
     return 0
 
@@ -420,6 +453,9 @@ def benchmark_orin_trt_sweep(
     monitor_enabled: bool,
     monitor_interval_ms: int,
     monitor_gpu_index: int,
+    repeat: int = 1,
+    idle_seconds: int = 0,
+    idle_sample_hz: int = 2,
 ) -> int:
     engine_paths = sorted(models_dir.glob("*.engine"))
     if not engine_paths:
@@ -432,18 +468,25 @@ def benchmark_orin_trt_sweep(
     print(f"Modeles  : {models_dir}")
     print(f"Engines  : {len(engine_paths)}")
 
+    idle_state = {"done": False}
     for engine_path in engine_paths:
         print("\n" + "-" * 40)
         print(f"[SWEEP] {engine_path.name}")
         print("-" * 40)
-        benchmark_orin(
-            str(engine_path),
-            num_classes,
-            dataset,
-            monitor_enabled=monitor_enabled,
-            monitor_interval_ms=monitor_interval_ms,
-            monitor_gpu_index=monitor_gpu_index,
-        )
+        for rep in range(repeat):
+            if repeat > 1:
+                print(f"[REPEAT] {rep + 1}/{repeat}")
+            benchmark_orin(
+                str(engine_path),
+                num_classes,
+                dataset,
+                monitor_enabled=monitor_enabled,
+                monitor_interval_ms=monitor_interval_ms,
+                monitor_gpu_index=monitor_gpu_index,
+                idle_state=idle_state,
+                idle_seconds=idle_seconds,
+                idle_sample_hz=idle_sample_hz,
+            )
 
     return 0
 
@@ -695,6 +738,71 @@ def stop_resource_monitor(monitor: ResourceMonitor | None) -> dict:
     return monitor.stop()
 
 
+def run_idle_baseline(
+    *,
+    idle_state: dict | None,
+    idle_seconds: int,
+    idle_sample_hz: int,
+    monitor_enabled: bool,
+    monitor_target: str,
+    monitor_gpu_index: int,
+    hardware: str,
+    dataset: str,
+    backend: str,
+    ort_level_requested: str = "N/A",
+    providers_used: str = "N/A",
+    extra_monitor_stats: dict | None = None,
+) -> None:
+    if not idle_state or idle_state.get("done"):
+        return
+    idle_state["done"] = True
+    if not monitor_enabled or idle_seconds <= 0:
+        return
+
+    if idle_sample_hz <= 0:
+        idle_interval_ms = 500
+    else:
+        idle_interval_ms = max(100, int(round(1000 / idle_sample_hz)))
+
+    monitor = start_resource_monitor(
+        True, monitor_target, idle_interval_ms, monitor_gpu_index
+    )
+    if not monitor:
+        return
+    print(f"[Idle] Sampling baseline for {idle_seconds}s...")
+    time.sleep(idle_seconds)
+    monitor_stats = stop_resource_monitor(monitor)
+    if extra_monitor_stats:
+        monitor_stats.update(extra_monitor_stats)
+
+    save_results(
+        hardware=hardware,
+        model_name="IDLE",
+        size_mb=0.0,
+        imgsz=0,
+        e2e_time_ms=0.0,
+        device_time_ms=0.0,
+        map50=0.0,
+        precision=0.0,
+        recall=0.0,
+        f1=0.0,
+        dataset=dataset,
+        backend=backend,
+        phase="idle",
+        latency_p50=0.0,
+        latency_p90=0.0,
+        latency_p95=0.0,
+        latency_p99=0.0,
+        preprocess_ms=0.0,
+        inference_ms=0.0,
+        postprocess_ms=0.0,
+        fps=0.0,
+        ort_level_requested=ort_level_requested,
+        providers_used=providers_used,
+        monitor_stats=monitor_stats,
+    )
+
+
 def parse_imgsz_from_filename(filepath: str) -> int:
     """
     Parse imgsz depuis le nom du fichier.
@@ -840,6 +948,7 @@ def save_results(
     f1: float,
     dataset: str = "coco128",
     backend: str = "N/A",
+    phase: str = "run",
     # Extended timing metrics (Phase 3)
     latency_p50: float = 0.0,
     latency_p90: float = 0.0,
@@ -888,12 +997,22 @@ def save_results(
     file_exists = RESULTS_FILE.exists()
     versions = get_versions()
 
+    header_has_phase = False
+    if file_exists:
+        try:
+            with open(RESULTS_FILE, "r") as f:
+                header = f.readline().strip().split(",")
+                header_has_phase = "Phase" in header
+        except Exception:
+            header_has_phase = False
+
     with open(RESULTS_FILE, "a", newline="") as f:
         writer = csv.writer(f)
         if not file_exists:
             writer.writerow(
                 [
                     "Timestamp",
+                    "Phase",
                     "Hardware",
                     "Model_Name",
                     "Size_MB",
@@ -969,9 +1088,15 @@ def save_results(
                     "onnxruntime",
                 ]
             )
+        elif not header_has_phase:
+            print(
+                "[Warning] CSV header sans colonne 'Phase'. "
+                "Supprimez le fichier pour regenerer un header complet."
+            )
         writer.writerow(
             [
                 datetime.now().isoformat(),
+                phase if not file_exists or header_has_phase else "",
                 hardware,
                 model_name,
                 f"{size_mb:.2f}",
@@ -1411,6 +1536,9 @@ def benchmark_gpu_ort(
     monitor_interval_ms: int = 500,
     monitor_gpu_index: int = 0,
     monitor_target: str = "4070",
+    idle_state: dict | None = None,
+    idle_seconds: int = 0,
+    idle_sample_hz: int = 2,
 ):
     """
     Benchmark sur GPU via ONNX Runtime.
@@ -1542,6 +1670,23 @@ def benchmark_gpu_ort(
         actual_provider = "CPUExecutionProvider"
         providers_used = "CPUExecutionProvider"
 
+    # -------------------------------------------------------------------------
+    # MICRO-PATCH: rendre le CSV "sweep-friendly"
+    # -------------------------------------------------------------------------
+    # On encode le niveau d'optimisation ORT dans la colonne Hardware afin
+    # de distinguer clairement disable/basic/extended/all dans le CSV.
+    #
+    # Rappel ORT: les niveaux d'optimisation sont définis par GraphOptimizationLevel
+    # (disable/basic/extended/all).
+    if "TensorrtExecutionProvider" in actual_provider:
+        provider_tag = "TRT"
+    elif "CUDA" in actual_provider:
+        provider_tag = "CUDA"
+    else:
+        provider_tag = "CPU"
+    level_tag = (ort_opt_level or "all").upper()
+    hardware = f"GPU_ORT_{provider_tag}_{level_tag}"
+
     input_info = session.get_inputs()[0]
     output_info = session.get_outputs()[0]
     input_name = input_info.name
@@ -1555,6 +1700,20 @@ def benchmark_gpu_ort(
     else:
         input_dtype = np.float32
         print("Input dtype: float32")
+
+    run_idle_baseline(
+        idle_state=idle_state,
+        idle_seconds=idle_seconds,
+        idle_sample_hz=idle_sample_hz,
+        monitor_enabled=monitor_enabled,
+        monitor_target=monitor_target,
+        monitor_gpu_index=monitor_gpu_index,
+        hardware=hardware,
+        dataset=dataset,
+        backend="onnxruntime",
+        ort_level_requested=f"{ort_level_requested}->{ort_level_effective}",
+        providers_used=providers_used,
+    )
 
     print(f"\nChargement du dataset {dataset.upper()}...")
     dataset_items = load_coco128_dataset(dataset)
@@ -1696,23 +1855,6 @@ def benchmark_gpu_ort(
     print(f"Recall              : {metrics['recall']:.4f}")
     print(f"F1-Score            : {metrics['f1']:.4f}")
 
-    # -------------------------------------------------------------------------
-    # MICRO-PATCH: rendre le CSV "sweep-friendly"
-    # -------------------------------------------------------------------------
-    # On encode le niveau d'optimisation ORT dans la colonne Hardware afin
-    # de distinguer clairement disable/basic/extended/all dans le CSV.
-    #
-    # Rappel ORT: les niveaux d'optimisation sont définis par GraphOptimizationLevel
-    # (disable/basic/extended/all).
-    if "TensorrtExecutionProvider" in actual_provider:
-        provider_tag = "TRT"
-    elif "CUDA" in actual_provider:
-        provider_tag = "CUDA"
-    else:
-        provider_tag = "CPU"
-    level_tag = (ort_opt_level or "all").upper()
-    hardware = f"GPU_ORT_{provider_tag}_{level_tag}"
-
     save_results(
         hardware=hardware,
         model_name=model_name,
@@ -1758,6 +1900,9 @@ def benchmark_cpu_ort(
     monitor_enabled: bool = False,
     monitor_interval_ms: int = 500,
     monitor_gpu_index: int = 0,
+    idle_state: dict | None = None,
+    idle_seconds: int = 0,
+    idle_sample_hz: int = 2,
 ):
     """
     Benchmark sur CPU via ONNX Runtime CPUExecutionProvider.
@@ -1826,6 +1971,9 @@ def benchmark_cpu_ort(
         exec_mode_tag = "SEQ"
     print(f"Execution mode: {cpu_execution_mode.upper()}")
 
+    # Hardware tag: CPU_ORT_{host_tag}_{exec_mode}
+    hardware = f"CPU_ORT_{host_tag}_{exec_mode_tag}"
+
     # CPUExecutionProvider uniquement
     providers = ["CPUExecutionProvider"]
 
@@ -1850,6 +1998,20 @@ def benchmark_cpu_ort(
     else:
         input_dtype = np.float32
         print("Input dtype: float32")
+
+    run_idle_baseline(
+        idle_state=idle_state,
+        idle_seconds=idle_seconds,
+        idle_sample_hz=idle_sample_hz,
+        monitor_enabled=monitor_enabled,
+        monitor_target="cpu",
+        monitor_gpu_index=monitor_gpu_index,
+        hardware=hardware,
+        dataset=dataset,
+        backend="onnxruntime-cpu",
+        ort_level_requested=f"{ort_level_requested}->{ort_level_effective}",
+        providers_used=providers_used,
+    )
 
     print(f"\nChargement du dataset {dataset.upper()}...")
     dataset_items = load_coco128_dataset(dataset)
@@ -1989,9 +2151,6 @@ def benchmark_cpu_ort(
     print(f"Recall              : {metrics['recall']:.4f}")
     print(f"F1-Score            : {metrics['f1']:.4f}")
 
-    # Hardware tag: CPU_ORT_{host_tag}_{exec_mode}
-    hardware = f"CPU_ORT_{host_tag}_{exec_mode_tag}"
-
     # Thread config pour le CSV
     thread_config = f"intra={cpu_threads or 'auto'},inter=1"
 
@@ -2036,6 +2195,9 @@ def benchmark_gpu_ultralytics(
     monitor_enabled: bool = False,
     monitor_interval_ms: int = 500,
     monitor_gpu_index: int = 0,
+    idle_state: dict | None = None,
+    idle_seconds: int = 0,
+    idle_sample_hz: int = 2,
 ):
     """
     Benchmark sur GPU via Ultralytics.
@@ -2063,6 +2225,19 @@ def benchmark_gpu_ultralytics(
 
     model = YOLO(model_path)
     print(f"Classes: {len(model.names)}")
+
+    run_idle_baseline(
+        idle_state=idle_state,
+        idle_seconds=idle_seconds,
+        idle_sample_hz=idle_sample_hz,
+        monitor_enabled=monitor_enabled,
+        monitor_target="4070",
+        monitor_gpu_index=monitor_gpu_index,
+        hardware="GPU_Ultralytics",
+        dataset=dataset,
+        backend="ultralytics",
+        providers_used="N/A",
+    )
 
     print(f"\nChargement du dataset {dataset.upper()}...")
     dataset_items = load_coco128_dataset(dataset)
@@ -2237,6 +2412,9 @@ def benchmark_oak(
     monitor_enabled: bool = False,
     monitor_interval_ms: int = 500,
     monitor_gpu_index: int = 0,
+    idle_state: dict | None = None,
+    idle_seconds: int = 0,
+    idle_sample_hz: int = 2,
 ):
     """
     Benchmark sur OAK-D (Myriad X VPU).
@@ -2265,6 +2443,11 @@ def benchmark_oak(
     print(f"ImgSz: {imgsz}")
     print(f"Classes: {num_classes}")
 
+    # Hardware tag: OAK_MyriadX_HOST_{host_tag}[_SHAVES_N]
+    shaves_match = re.search(r"_(\d+)shave$", model_name)
+    shaves_tag = f"_SHAVES_{shaves_match.group(1)}" if shaves_match else ""
+    hardware = f"OAK_MyriadX_HOST_{host_tag}{shaves_tag}"
+
     print(f"\nChargement du dataset {dataset.upper()}...")
     dataset_items = load_coco128_dataset(dataset)
 
@@ -2291,6 +2474,57 @@ def benchmark_oak(
                 return used / (1024 * 1024)
             return used / (1024 * 1024) if used > 1024 * 1024 else used
         return None
+
+    def _stats(values):
+        if not values:
+            return None, None, None
+        vals_sorted = sorted(values)
+        mean = sum(values) / len(values)
+        p95 = vals_sorted[int(0.95 * (len(vals_sorted) - 1))]
+        mx = vals_sorted[-1]
+        return mean, p95, mx
+
+    def _sample_oak_sys(q_sys, seconds: int, sample_hz: int) -> dict:
+        if not q_sys or seconds <= 0:
+            return {}
+        period = 1.0 / sample_hz if sample_hz > 0 else 0.5
+        end_t = time.time() + seconds
+        leon_vals = []
+        ddr_vals = []
+        cmx_vals = []
+        while time.time() < end_t:
+            sysinfo = q_sys.tryGet()
+            if sysinfo:
+                info = (
+                    sysinfo.getSystemInformation()
+                    if hasattr(sysinfo, "getSystemInformation")
+                    else sysinfo
+                )
+                leon_css = _extract_percent(getattr(info, "leonCssCpuUsage", None))
+                ddr_used = _extract_used_mb(getattr(info, "ddrMemoryUsage", None))
+                cmx_used = _extract_used_mb(getattr(info, "cmxMemoryUsage", None))
+                if leon_css is not None:
+                    leon_vals.append(leon_css)
+                if ddr_used is not None:
+                    ddr_vals.append(ddr_used)
+                if cmx_used is not None:
+                    cmx_vals.append(cmx_used)
+            time.sleep(period)
+
+        leon_mean, leon_p95, leon_max = _stats(leon_vals)
+        ddr_mean, ddr_p95, ddr_max = _stats(ddr_vals)
+        cmx_mean, cmx_p95, cmx_max = _stats(cmx_vals)
+        return {
+            "oak_leon_css_cpu_pct_mean": leon_mean,
+            "oak_leon_css_cpu_pct_p95": leon_p95,
+            "oak_leon_css_cpu_pct_max": leon_max,
+            "oak_ddr_used_mb_mean": ddr_mean,
+            "oak_ddr_used_mb_p95": ddr_p95,
+            "oak_ddr_used_mb_max": ddr_max,
+            "oak_cmx_used_mb_mean": cmx_mean,
+            "oak_cmx_used_mb_p95": cmx_p95,
+            "oak_cmx_used_mb_max": cmx_max,
+        }
 
     # Pipeline DepthAI
     pipeline = dai.Pipeline()
@@ -2327,7 +2561,6 @@ def benchmark_oak(
     oak_leon_css = []
     oak_ddr_used_mb = []
     oak_cmx_used_mb = []
-
     with dai.Device(pipeline) as device:
         # TODO (OAK_QUEUE): blocking=False + maxSize=1 = risque de drop/variabilite.
         #   Pour un benchmark latence, il serait plus "propre" d'eviter toute logique de
@@ -2342,6 +2575,23 @@ def benchmark_oak(
             else None
         )
 
+        idle_oak_stats = {}
+        if idle_state and not idle_state.get("done") and monitor_enabled:
+            idle_oak_stats = _sample_oak_sys(q_sys, idle_seconds, idle_sample_hz)
+
+        run_idle_baseline(
+            idle_state=idle_state,
+            idle_seconds=idle_seconds,
+            idle_sample_hz=idle_sample_hz,
+            monitor_enabled=monitor_enabled,
+            monitor_target="oak",
+            monitor_gpu_index=monitor_gpu_index,
+            hardware=hardware,
+            dataset=dataset,
+            backend="depthai",
+            providers_used="N/A",
+            extra_monitor_stats=idle_oak_stats,
+        )
         # TODO (PREPROCESS_FAIRNESS): OAK vs GPU/CPU preprocessing mismatch!
         #   GPU/CPU: BGR->RGB, normalize /255, CHW, float16/float32
         #   OAK: BGR888p uint8 (pas de RGB, pas de /255)
@@ -2494,16 +2744,6 @@ def benchmark_oak(
                         oak_cmx_used_mb.append(cmx_used)
 
         monitor_stats = stop_resource_monitor(monitor)
-
-    def _stats(values):
-        if not values:
-            return None, None, None
-        vals_sorted = sorted(values)
-        mean = sum(values) / len(values)
-        p95 = vals_sorted[int(0.95 * (len(vals_sorted) - 1))]
-        mx = vals_sorted[-1]
-        return mean, p95, mx
-
     leon_mean, leon_p95, leon_max = _stats(oak_leon_css)
     ddr_mean, ddr_p95, ddr_max = _stats(oak_ddr_used_mb)
     cmx_mean, cmx_p95, cmx_max = _stats(oak_cmx_used_mb)
@@ -2549,11 +2789,6 @@ def benchmark_oak(
     print(f"Recall              : {metrics['recall']:.4f}")
     print(f"F1-Score            : {metrics['f1']:.4f}")
 
-    # Hardware tag: OAK_MyriadX_HOST_{host_tag}[_SHAVES_N]
-    shaves_match = re.search(r"_(\d+)shave$", model_name)
-    shaves_tag = f"_SHAVES_{shaves_match.group(1)}" if shaves_match else ""
-    hardware = f"OAK_MyriadX_HOST_{host_tag}{shaves_tag}"
-
     save_results(
         hardware=hardware,
         model_name=model_name,
@@ -2592,6 +2827,9 @@ def benchmark_orin(
     monitor_enabled: bool = False,
     monitor_interval_ms: int = 500,
     monitor_gpu_index: int = 0,
+    idle_state: dict | None = None,
+    idle_seconds: int = 0,
+    idle_sample_hz: int = 2,
 ):
     """
     Benchmark sur Jetson Orin (TensorRT ENGINE).
@@ -2639,6 +2877,9 @@ def benchmark_orin(
             monitor_enabled,
             monitor_interval_ms,
             monitor_gpu_index,
+            idle_state,
+            idle_seconds,
+            idle_sample_hz,
         )
     else:
         # Fallback Ultralytics
@@ -2653,6 +2894,9 @@ def benchmark_orin(
             monitor_enabled,
             monitor_interval_ms,
             monitor_gpu_index,
+            idle_state,
+            idle_seconds,
+            idle_sample_hz,
         )
 
 
@@ -2667,6 +2911,9 @@ def _benchmark_orin_trt(
     monitor_enabled: bool = False,
     monitor_interval_ms: int = 500,
     monitor_gpu_index: int = 0,
+    idle_state: dict | None = None,
+    idle_seconds: int = 0,
+    idle_sample_hz: int = 2,
 ):
     """Benchmark Orin avec TensorRT Python API (meme postprocess que OAK)."""
     import pycuda.driver as cuda
@@ -2717,6 +2964,19 @@ def _benchmark_orin_trt(
 
     print(f"  Input shape: {input_shape}, dtype: {input_np_dtype.__name__}")
     print(f"  Output shape: {output_shape}, dtype: {output_np_dtype.__name__}")
+
+    run_idle_baseline(
+        idle_state=idle_state,
+        idle_seconds=idle_seconds,
+        idle_sample_hz=idle_sample_hz,
+        monitor_enabled=monitor_enabled,
+        monitor_target="orin",
+        monitor_gpu_index=monitor_gpu_index,
+        hardware="Jetson_Orin_TRT",
+        dataset=dataset,
+        backend="tensorrt",
+        providers_used="N/A",
+    )
 
     # Allouer les buffers avec les bons dtypes
     input_size = int(np.prod(input_shape) * np.dtype(input_np_dtype).itemsize)
@@ -2917,6 +3177,9 @@ def _benchmark_orin_ultralytics(
     monitor_enabled: bool = False,
     monitor_interval_ms: int = 500,
     monitor_gpu_index: int = 0,
+    idle_state: dict | None = None,
+    idle_seconds: int = 0,
+    idle_sample_hz: int = 2,
 ):
     """Fallback: Benchmark Orin avec Ultralytics (postprocess different)."""
     import torch
@@ -2938,6 +3201,19 @@ def _benchmark_orin_ultralytics(
             }
     except Exception:
         pass
+
+    run_idle_baseline(
+        idle_state=idle_state,
+        idle_seconds=idle_seconds,
+        idle_sample_hz=idle_sample_hz,
+        monitor_enabled=monitor_enabled,
+        monitor_target="orin",
+        monitor_gpu_index=monitor_gpu_index,
+        hardware="Jetson_Orin_Ultralytics",
+        dataset=dataset,
+        backend="ultralytics",
+        providers_used="N/A",
+    )
 
     # Warmup
     print(f"Warmup ({WARMUP_FRAMES} frames)...")
@@ -3184,6 +3460,24 @@ def main():
         metavar="[4-8]",
         help="Nombre de shaves pour OAK (4-8). Si fourni, selectionne le blob *_{shaves}shave.blob",
     )
+    parser.add_argument(
+        "--repeat",
+        type=int,
+        default=1,
+        help="Nombre de repetitions par run (defaut: 1)",
+    )
+    parser.add_argument(
+        "--idle-seconds",
+        type=int,
+        default=3,
+        help="Duree baseline idle avant run/sweep (defaut: 3s)",
+    )
+    parser.add_argument(
+        "--idle-sample-hz",
+        type=int,
+        default=2,
+        help="Frequence sampling baseline idle (defaut: 2 Hz)",
+    )
     monitor_group = parser.add_mutually_exclusive_group()
     monitor_group.add_argument(
         "--monitor",
@@ -3217,6 +3511,12 @@ def main():
 
     if args.monitor is None:
         args.monitor = True
+    if args.repeat < 1:
+        parser.error("--repeat doit etre >= 1")
+    if args.idle_seconds < 0:
+        parser.error("--idle-seconds doit etre >= 0")
+    if args.idle_sample_hz < 1:
+        parser.error("--idle-sample-hz doit etre >= 1")
 
     if args.target == "4070" and not args.model:
         if args.backend != "ort":
@@ -3233,6 +3533,9 @@ def main():
             monitor_interval_ms=args.monitor_interval_ms,
             monitor_gpu_index=args.monitor_gpu,
             monitor_target="4070",
+            repeat=args.repeat,
+            idle_seconds=args.idle_seconds,
+            idle_sample_hz=args.idle_sample_hz,
         )
     if args.target == "cpu" and not args.model:
         if args.ort_opt_level is not None:
@@ -3247,6 +3550,9 @@ def main():
             monitor_enabled=args.monitor,
             monitor_interval_ms=args.monitor_interval_ms,
             monitor_gpu_index=args.monitor_gpu,
+            repeat=args.repeat,
+            idle_seconds=args.idle_seconds,
+            idle_sample_hz=args.idle_sample_hz,
         )
     if args.target == "pi4" and not args.model:
         if args.ort_opt_level is not None:
@@ -3262,6 +3568,9 @@ def main():
             monitor_enabled=args.monitor,
             monitor_interval_ms=args.monitor_interval_ms,
             monitor_gpu_index=args.monitor_gpu,
+            repeat=args.repeat,
+            idle_seconds=args.idle_seconds,
+            idle_sample_hz=args.idle_sample_hz,
         )
     if args.target == "oak" and not args.model:
         if args.shaves is not None:
@@ -3280,6 +3589,9 @@ def main():
             monitor_enabled=args.monitor,
             monitor_interval_ms=args.monitor_interval_ms,
             monitor_gpu_index=args.monitor_gpu,
+            repeat=args.repeat,
+            idle_seconds=args.idle_seconds,
+            idle_sample_hz=args.idle_sample_hz,
         )
     if args.target == "orin_ort" and not args.model:
         if args.backend != "ort":
@@ -3294,6 +3606,9 @@ def main():
             monitor_interval_ms=args.monitor_interval_ms,
             monitor_gpu_index=args.monitor_gpu,
             monitor_target="orin",
+            repeat=args.repeat,
+            idle_seconds=args.idle_seconds,
+            idle_sample_hz=args.idle_sample_hz,
         )
     if args.target == "orin_trt" and not args.model:
         return benchmark_orin_trt_sweep(
@@ -3303,6 +3618,9 @@ def main():
             monitor_enabled=args.monitor,
             monitor_interval_ms=args.monitor_interval_ms,
             monitor_gpu_index=args.monitor_gpu,
+            repeat=args.repeat,
+            idle_seconds=args.idle_seconds,
+            idle_sample_hz=args.idle_sample_hz,
         )
     if args.target == "orin" and not args.model:
         status_trt = benchmark_orin_trt_sweep(
@@ -3312,6 +3630,9 @@ def main():
             monitor_enabled=args.monitor,
             monitor_interval_ms=args.monitor_interval_ms,
             monitor_gpu_index=args.monitor_gpu,
+            repeat=args.repeat,
+            idle_seconds=args.idle_seconds,
+            idle_sample_hz=args.idle_sample_hz,
         )
         if args.backend != "ort":
             print("[Warning] Sweep Orin ORT utilise ORT par defaut.")
@@ -3325,6 +3646,9 @@ def main():
             monitor_interval_ms=args.monitor_interval_ms,
             monitor_gpu_index=args.monitor_gpu,
             monitor_target="orin",
+            repeat=args.repeat,
+            idle_seconds=args.idle_seconds,
+            idle_sample_hz=args.idle_sample_hz,
         )
         return 0 if status_trt == 0 and status_ort == 0 else 1
 
@@ -3377,8 +3701,95 @@ def main():
         print(f"Attention: Pour Orin TRT, .engine attendu (recu: {ext})")
 
     # Benchmark
-    if args.target == "4070":
-        if args.backend == "ort" and ext == ".onnx":
+    idle_state = {"done": False}
+    for rep in range(args.repeat):
+        if args.repeat > 1:
+            print(f"\n[REPEAT] {rep + 1}/{args.repeat}")
+        if args.target == "4070":
+            if args.backend == "ort" and ext == ".onnx":
+                benchmark_gpu_ort(
+                    model_path,
+                    args.num_classes,
+                    args.dataset,
+                    ort_opt_level=args.ort_opt_level,
+                    monitor_enabled=args.monitor,
+                    monitor_interval_ms=args.monitor_interval_ms,
+                    monitor_gpu_index=args.monitor_gpu,
+                    monitor_target="4070",
+                    idle_state=idle_state,
+                    idle_seconds=args.idle_seconds,
+                    idle_sample_hz=args.idle_sample_hz,
+                )
+            else:
+                benchmark_gpu_ultralytics(
+                    model_path,
+                    args.num_classes,
+                    args.dataset,
+                    monitor_enabled=args.monitor,
+                    monitor_interval_ms=args.monitor_interval_ms,
+                    monitor_gpu_index=args.monitor_gpu,
+                    idle_state=idle_state,
+                    idle_seconds=args.idle_seconds,
+                    idle_sample_hz=args.idle_sample_hz,
+                )
+        elif args.target == "cpu":
+            benchmark_cpu_ort(
+                model_path,
+                args.num_classes,
+                args.dataset,
+                host_tag=args.host_tag,
+                cpu_threads=args.cpu_threads,
+                cpu_execution_mode=args.cpu_execution_mode,
+                ort_opt_level=args.ort_opt_level,
+                monitor_enabled=args.monitor,
+                monitor_interval_ms=args.monitor_interval_ms,
+                monitor_gpu_index=args.monitor_gpu,
+                idle_state=idle_state,
+                idle_seconds=args.idle_seconds,
+                idle_sample_hz=args.idle_sample_hz,
+            )
+        elif args.target == "pi4":
+            benchmark_cpu_ort(
+                model_path,
+                args.num_classes,
+                args.dataset,
+                host_tag=args.host_tag or "PI4",
+                cpu_threads=args.cpu_threads,
+                cpu_execution_mode=args.cpu_execution_mode,
+                ort_opt_level=args.ort_opt_level,
+                monitor_enabled=args.monitor,
+                monitor_interval_ms=args.monitor_interval_ms,
+                monitor_gpu_index=args.monitor_gpu,
+                idle_state=idle_state,
+                idle_seconds=args.idle_seconds,
+                idle_sample_hz=args.idle_sample_hz,
+            )
+        elif args.target == "oak":
+            benchmark_oak(
+                model_path,
+                args.num_classes,
+                args.dataset,
+                host_tag=args.host_tag,
+                monitor_enabled=args.monitor,
+                monitor_interval_ms=args.monitor_interval_ms,
+                monitor_gpu_index=args.monitor_gpu,
+                idle_state=idle_state,
+                idle_seconds=args.idle_seconds,
+                idle_sample_hz=args.idle_sample_hz,
+            )
+        elif args.target == "orin":
+            benchmark_orin(
+                model_path,
+                args.num_classes,
+                args.dataset,
+                monitor_enabled=args.monitor,
+                monitor_interval_ms=args.monitor_interval_ms,
+                monitor_gpu_index=args.monitor_gpu,
+                idle_state=idle_state,
+                idle_seconds=args.idle_seconds,
+                idle_sample_hz=args.idle_sample_hz,
+            )
+        elif args.target == "orin_ort":
             benchmark_gpu_ort(
                 model_path,
                 args.num_classes,
@@ -3387,82 +3798,23 @@ def main():
                 monitor_enabled=args.monitor,
                 monitor_interval_ms=args.monitor_interval_ms,
                 monitor_gpu_index=args.monitor_gpu,
-                monitor_target="4070",
+                monitor_target="orin",
+                idle_state=idle_state,
+                idle_seconds=args.idle_seconds,
+                idle_sample_hz=args.idle_sample_hz,
             )
-        else:
-            benchmark_gpu_ultralytics(
+        elif args.target == "orin_trt":
+            benchmark_orin(
                 model_path,
                 args.num_classes,
                 args.dataset,
                 monitor_enabled=args.monitor,
                 monitor_interval_ms=args.monitor_interval_ms,
                 monitor_gpu_index=args.monitor_gpu,
+                idle_state=idle_state,
+                idle_seconds=args.idle_seconds,
+                idle_sample_hz=args.idle_sample_hz,
             )
-    elif args.target == "cpu":
-        benchmark_cpu_ort(
-            model_path,
-            args.num_classes,
-            args.dataset,
-            host_tag=args.host_tag,
-            cpu_threads=args.cpu_threads,
-            cpu_execution_mode=args.cpu_execution_mode,
-            ort_opt_level=args.ort_opt_level,
-            monitor_enabled=args.monitor,
-            monitor_interval_ms=args.monitor_interval_ms,
-            monitor_gpu_index=args.monitor_gpu,
-        )
-    elif args.target == "pi4":
-        benchmark_cpu_ort(
-            model_path,
-            args.num_classes,
-            args.dataset,
-            host_tag=args.host_tag or "PI4",
-            cpu_threads=args.cpu_threads,
-            cpu_execution_mode=args.cpu_execution_mode,
-            ort_opt_level=args.ort_opt_level,
-            monitor_enabled=args.monitor,
-            monitor_interval_ms=args.monitor_interval_ms,
-            monitor_gpu_index=args.monitor_gpu,
-        )
-    elif args.target == "oak":
-        benchmark_oak(
-            model_path,
-            args.num_classes,
-            args.dataset,
-            host_tag=args.host_tag,
-            monitor_enabled=args.monitor,
-            monitor_interval_ms=args.monitor_interval_ms,
-            monitor_gpu_index=args.monitor_gpu,
-        )
-    elif args.target == "orin":
-        benchmark_orin(
-            model_path,
-            args.num_classes,
-            args.dataset,
-            monitor_enabled=args.monitor,
-            monitor_interval_ms=args.monitor_interval_ms,
-            monitor_gpu_index=args.monitor_gpu,
-        )
-    elif args.target == "orin_ort":
-        benchmark_gpu_ort(
-            model_path,
-            args.num_classes,
-            args.dataset,
-            ort_opt_level=args.ort_opt_level,
-            monitor_enabled=args.monitor,
-            monitor_interval_ms=args.monitor_interval_ms,
-            monitor_gpu_index=args.monitor_gpu,
-            monitor_target="orin",
-        )
-    elif args.target == "orin_trt":
-        benchmark_orin(
-            model_path,
-            args.num_classes,
-            args.dataset,
-            monitor_enabled=args.monitor,
-            monitor_interval_ms=args.monitor_interval_ms,
-            monitor_gpu_index=args.monitor_gpu,
-        )
 
     return 0
 
