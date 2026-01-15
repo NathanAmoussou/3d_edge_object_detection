@@ -2215,8 +2215,8 @@ def benchmark_cpu_ort(
         exec_mode_tag = "SEQ"
     print(f"Execution mode: {cpu_execution_mode.upper()}")
 
-    # Hardware tag: CPU_ORT_{host_tag}_{exec_mode}
-    hardware = f"CPU_ORT_{host_tag}_{exec_mode_tag}"
+    # Hardware tag: CPU_ORT_{host_tag}_{exec_mode}_{ort_level}
+    hardware = f"CPU_ORT_{host_tag}_{exec_mode_tag}_{ort_level_requested.upper()}"
 
     # CPUExecutionProvider uniquement
     providers = ["CPUExecutionProvider"]
