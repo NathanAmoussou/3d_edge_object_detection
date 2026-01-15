@@ -33,13 +33,18 @@ Options:
     --cpu-threads N            : Nombre de threads intra-op pour inference CPU (defaut: auto)
     --cpu-execution-mode       : Mode d'execution ORT CPU: sequential ou parallel (defaut: sequential)
     --shaves N                 : Nombre de shaves OAK (4-8) (auto-complete le nom du blob: *_{N}shave.blob)
-    --repeat N                 : Nombre de repetitions par run (defaut: 1)
+    --repeat N                 : Nombre de repetitions par run (defaut: 3)
     --idle-seconds N           : Duree baseline idle avant run/sweep (defaut: 3s)
     --idle-sample-hz N         : Frequence sampling baseline idle (defaut: 2 Hz)
     --monitor                  : Activer le monitoring CPU/RAM/GPU (psutil + nvidia-smi/tegrastats)
     --no-monitor               : Desactiver le monitoring (defaut auto pour 4070/oak)
     --monitor-interval-ms N    : Intervalle d'echantillonnage (defaut: 500ms)
     --monitor-gpu N            : Index GPU pour nvidia-smi (defaut: 0)
+    --tapo-ip IP               : IP de la prise Tapo (active power logging)
+    --tapo-user USER           : Email Tapo (ou env TAPO_USER/TAPO_USERNAME)
+    --tapo-password PASS       : Mot de passe Tapo (ou env TAPO_PASSWORD)
+    --tapo-interval-s N        : Intervalle de polling Tapo en secondes (defaut: 2)
+    --tapo-power-scale N       : Facteur pour convertir current_power en W (defaut: 1)
 
 ===============================================================================
 DECISIONS DE CONCEPTION - EQUITE MULTI-HARDWARE
@@ -144,10 +149,17 @@ MAX_DET = 300
 # --- Warmup ---
 WARMUP_FRAMES = 10
 
+# --- Power monitoring (Tapo) ---
+POWER_MONITOR_CONFIG: dict = {}
+
 
 # =============================================================================
 # UTILITAIRES
 # =============================================================================
+
+
+def is_power_monitor_enabled() -> bool:
+    return bool(POWER_MONITOR_CONFIG)
 
 
 def is_int8_qdq_model(model_path: str) -> bool:
@@ -493,12 +505,13 @@ def benchmark_orin_trt_sweep(
 
 class ResourceMonitor:
     """
-    Monitoring host (CPU/RAM) + GPU (NVIDIA) + Jetson (tegrastats) en thread.
+    Monitoring host (CPU/RAM) + GPU (NVIDIA) + Jetson (tegrastats) + Tapo power.
 
     Notes:
-    - psutil est optionnel: si absent, le monitor est desactive.
+    - psutil est optionnel: si absent, CPU/RAM sont desactives.
     - nvidia-smi est interroge si active (GPU dGPU).
     - tegrastats est lance si active (Jetson).
+    - tapo est optionnel pour Tapo.
     """
 
     def __init__(
@@ -507,11 +520,14 @@ class ResourceMonitor:
         enable_nvidia_smi: bool = False,
         nvidia_gpu_index: int = 0,
         enable_tegrastats: bool = False,
+        enable_resources: bool = True,
+        power_config: dict | None = None,
     ):
         self.interval = interval_ms / 1000.0
         self.enable_nvidia_smi = enable_nvidia_smi
         self.nvidia_gpu_index = nvidia_gpu_index
         self.enable_tegrastats = enable_tegrastats
+        self.enable_resources = enable_resources
 
         self._stop = threading.Event()
         self._th = None
@@ -522,30 +538,70 @@ class ResourceMonitor:
         self._last_emc = None
         self._nvidia_smi_ok = True
 
+        self.power_config = power_config or {}
+        self.power_enabled = bool(self.power_config)
+        self.power_interval_s = 2.0
+        self.power_scale = 1.0
+        if self.power_enabled:
+            try:
+                self.power_interval_s = float(
+                    self.power_config.get("power_interval_s", 2.0)
+                )
+            except (TypeError, ValueError):
+                self.power_interval_s = 2.0
+            try:
+                self.power_scale = float(self.power_config.get("power_scale", 1.0))
+            except (TypeError, ValueError):
+                self.power_scale = 1.0
+        if self.power_interval_s <= 0:
+            self.power_interval_s = 2.0
+        if self.power_scale <= 0:
+            self.power_scale = 1.0
+        self._power_client = None
+        self._power_device = None
+        self._power_loop = None
+        self._power_init_failed = False
+        self._power_failures = 0
+        self._last_power_poll = 0.0
+
         self._psutil = None
         self.proc = None
         self.cpu_count = None
-        try:
-            import psutil  # type: ignore
+        if self.enable_resources:
+            try:
+                import psutil  # type: ignore
 
-            self._psutil = psutil
-            self.proc = psutil.Process(os.getpid())
-            self.cpu_count = psutil.cpu_count() or None
-        except Exception:
-            self._psutil = None
-            self.proc = None
-            self.cpu_count = None
+                self._psutil = psutil
+                self.proc = psutil.Process(os.getpid())
+                self.cpu_count = psutil.cpu_count() or None
+            except Exception:
+                self._psutil = None
+                self.proc = None
+                self.cpu_count = None
 
     def start(self) -> bool:
-        if not self._psutil or not self.proc:
-            print("[Monitor] psutil indisponible, monitoring desactive.")
+        has_resources = bool(self.enable_resources and self._psutil and self.proc)
+        if self.power_enabled:
+            if not self._power_preflight():
+                self.power_enabled = False
+
+        if (
+            not has_resources
+            and not self.power_enabled
+            and not self.enable_nvidia_smi
+            and not self.enable_tegrastats
+        ):
+            print("[Monitor] Aucun backend dispo, monitoring desactive.")
             return False
+        if self.enable_resources and not has_resources:
+            print("[Monitor] psutil indisponible, CPU/RAM desactive.")
 
         # Prime cpu_percent (sinon 0.0 au 1er read)
-        try:
-            self.proc.cpu_percent(interval=None)
-        except Exception:
-            pass
+        if has_resources:
+            try:
+                self.proc.cpu_percent(interval=None)
+            except Exception:
+                pass
 
         if self.enable_tegrastats:
             self._start_tegrastats()
@@ -555,26 +611,37 @@ class ResourceMonitor:
         return True
 
     def stop(self) -> dict:
-        if not self._psutil or not self.proc:
+        if not self._th:
             return {}
-
         self._stop.set()
         if self._th:
             self._th.join(timeout=2.0)
         self._stop_tegrastats()
+        if self._power_loop:
+            try:
+                self._power_loop.close()
+            except Exception:
+                pass
         return self._summarize()
 
     def _run(self) -> None:
         while not self._stop.is_set():
             t = time.time()
 
-            cpu_p = self.proc.cpu_percent(interval=None)
-            cpu_norm = (
-                (cpu_p / self.cpu_count) if self.cpu_count and self.cpu_count > 0 else None
-            )
-            rss_mb = self.proc.memory_info().rss / (1024 * 1024)
-            vm = self._psutil.virtual_memory()
-            ram_used_mb = (vm.total - vm.available) / (1024 * 1024)
+            cpu_p = None
+            cpu_norm = None
+            rss_mb = None
+            ram_used_mb = None
+            if self._psutil and self.proc:
+                cpu_p = self.proc.cpu_percent(interval=None)
+                cpu_norm = (
+                    (cpu_p / self.cpu_count)
+                    if self.cpu_count and self.cpu_count > 0
+                    else None
+                )
+                rss_mb = self.proc.memory_info().rss / (1024 * 1024)
+                vm = self._psutil.virtual_memory()
+                ram_used_mb = (vm.total - vm.available) / (1024 * 1024)
 
             gpu_util = None
             vram_mb = None
@@ -583,6 +650,7 @@ class ResourceMonitor:
 
             gr3d = self._last_gr3d
             emc = self._last_emc
+            power_w = self._read_power_w(t) if self.power_enabled else None
 
             self.samples.append(
                 {
@@ -595,6 +663,7 @@ class ResourceMonitor:
                     "vram_mb": vram_mb,
                     "gr3d": gr3d,
                     "emc": emc,
+                    "power_w": power_w,
                 }
             )
 
@@ -620,6 +689,94 @@ class ResourceMonitor:
         except Exception:
             self._nvidia_smi_ok = False
             return None, None
+
+    def _power_preflight(self) -> bool:
+        ip = self.power_config.get("ip")
+        user = self.power_config.get("user")
+        password = self.power_config.get("password")
+        if not ip or not user or not password:
+            print("[Monitor] Tapo config incomplete, power monitoring disabled.")
+            return False
+        try:
+            from tapo import ApiClient  # type: ignore
+        except Exception:
+            print("[Monitor] tapo not available, power monitoring disabled.")
+            return False
+        return True
+
+    def _ensure_power_device(self) -> bool:
+        if self._power_init_failed:
+            return False
+        if self._power_device:
+            return True
+        ip = self.power_config.get("ip")
+        user = self.power_config.get("user")
+        password = self.power_config.get("password")
+        if not ip or not user or not password:
+            print("[Monitor] Tapo config incomplete, power monitoring disabled.")
+            self._power_init_failed = True
+            return False
+        try:
+            import asyncio
+            from tapo import ApiClient  # type: ignore
+        except Exception:
+            print("[Monitor] tapo not available, power monitoring disabled.")
+            self._power_init_failed = True
+            return False
+        if self._power_loop is None:
+            self._power_loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(self._power_loop)
+
+        async def _connect():
+            client = ApiClient(user, password)
+            device = await client.p110(ip)
+            return client, device
+
+        try:
+            self._power_client, self._power_device = self._power_loop.run_until_complete(
+                _connect()
+            )
+        except Exception:
+            print("[Monitor] Tapo connect failed, power monitoring disabled.")
+            self._power_init_failed = True
+            return False
+        return True
+
+    def _read_power_w(self, now: float) -> float | None:
+        if not self.power_enabled:
+            return None
+        if (now - self._last_power_poll) < self.power_interval_s:
+            return None
+        if not self._ensure_power_device():
+            self.power_enabled = False
+            return None
+        self._last_power_poll = now
+        try:
+            result = self._power_loop.run_until_complete(
+                self._power_device.get_current_power()
+            )
+        except Exception:
+            self._power_failures += 1
+            if self._power_failures == 1:
+                print("[Monitor] Tapo read failed, power values may be missing.")
+            if self._power_failures >= 3:
+                print("[Monitor] Tapo read errors, power monitoring disabled.")
+                self.power_enabled = False
+            return None
+        self._power_failures = 0
+        if result is None:
+            return None
+        raw_val = getattr(result, "current_power", None)
+        if raw_val is None and isinstance(result, dict):
+            raw_val = result.get("current_power")
+        if raw_val is None:
+            return None
+        try:
+            raw_val = float(raw_val)
+        except (TypeError, ValueError):
+            return None
+        scale = self.power_scale if self.power_scale > 0 else 1.0
+        return raw_val / scale
 
     def _start_tegrastats(self) -> None:
         try:
@@ -678,6 +835,7 @@ class ResourceMonitor:
         vram_mean, vram_p95, vram_max = stats("vram_mb")
         gr3d_mean, gr3d_p95, gr3d_max = stats("gr3d")
         emc_mean, emc_p95, emc_max = stats("emc")
+        power_mean, power_p95, power_max = stats("power_w")
 
         return {
             "cpu_proc_mean": cpu_mean,
@@ -704,6 +862,9 @@ class ResourceMonitor:
             "emc_mean": emc_mean,
             "emc_p95": emc_p95,
             "emc_max": emc_max,
+            "power_w_mean": power_mean,
+            "power_w_p95": power_p95,
+            "power_w_max": power_max,
         }
 
 
@@ -713,21 +874,26 @@ def start_resource_monitor(
     interval_ms: int,
     gpu_index: int,
 ) -> ResourceMonitor | None:
-    if not enabled:
+    power_config = POWER_MONITOR_CONFIG
+    power_enabled = bool(power_config)
+    if not enabled and not power_enabled:
         return None
 
-    enable_nvidia_smi = target == "4070"
-    enable_tegrastats = target == "orin"
+    enable_nvidia_smi = enabled and target == "4070"
+    enable_tegrastats = enabled and target == "orin"
     monitor = ResourceMonitor(
         interval_ms=interval_ms,
         enable_nvidia_smi=enable_nvidia_smi,
         nvidia_gpu_index=gpu_index,
         enable_tegrastats=enable_tegrastats,
+        enable_resources=enabled,
+        power_config=power_config,
     )
     if not monitor.start():
         return None
     print(
-        f"[Monitor] interval={interval_ms}ms, nvidia-smi={enable_nvidia_smi}, tegrastats={enable_tegrastats}"
+        f"[Monitor] interval={interval_ms}ms, nvidia-smi={enable_nvidia_smi}, "
+        f"tegrastats={enable_tegrastats}, tapo_power={monitor.power_enabled}"
     )
     return monitor
 
@@ -756,7 +922,9 @@ def run_idle_baseline(
     if not idle_state or idle_state.get("done"):
         return
     idle_state["done"] = True
-    if not monitor_enabled or idle_seconds <= 0:
+    if idle_seconds <= 0:
+        return
+    if not monitor_enabled and not is_power_monitor_enabled():
         return
 
     if idle_sample_hz <= 0:
@@ -765,13 +933,21 @@ def run_idle_baseline(
         idle_interval_ms = max(100, int(round(1000 / idle_sample_hz)))
 
     monitor = start_resource_monitor(
-        True, monitor_target, idle_interval_ms, monitor_gpu_index
+        monitor_enabled, monitor_target, idle_interval_ms, monitor_gpu_index
     )
     if not monitor:
         return
     print(f"[Idle] Sampling baseline for {idle_seconds}s...")
     time.sleep(idle_seconds)
     monitor_stats = stop_resource_monitor(monitor)
+    if monitor and monitor.power_enabled and monitor.samples:
+        append_power_timeseries_csv(
+            ROOT_DIR / "power_timeseries.csv",
+            hardware=hardware,
+            model_name="IDLE",
+            phase="idle",
+            samples=monitor.samples,
+        )
     if extra_monitor_stats:
         monitor_stats.update(extra_monitor_stats)
 
@@ -935,6 +1111,37 @@ def detect_host_tag() -> str:
     return f"PC_{machine}"
 
 
+def append_power_timeseries_csv(
+    path: Path,
+    *,
+    hardware: str,
+    model_name: str,
+    phase: str,
+    samples: list[dict],
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    new = not path.exists()
+    with open(path, "a", newline="") as f:
+        w = csv.writer(f)
+        if new:
+            w.writerow(["ts_iso", "t_epoch", "power_w", "hardware", "model_name", "phase"])
+        for s in samples:
+            p = s.get("power_w")
+            if p is None:
+                continue
+            t = float(s["t"])
+            w.writerow(
+                [
+                    datetime.fromtimestamp(t).isoformat(),
+                    f"{t:.3f}",
+                    f"{float(p):.3f}",
+                    hardware,
+                    model_name,
+                    phase,
+                ]
+            )
+
+
 def save_results(
     hardware: str,
     model_name: str,
@@ -983,6 +1190,7 @@ def save_results(
 
     Resource monitoring (optional):
     - CPU process %, RSS, RAM system, GPU utilization/VRAM, GR3D/EMC (Jetson)
+    - Power (Tapo): Power_W_* in W (scale configurable)
     """
     monitor_stats = monitor_stats or {}
 
@@ -998,13 +1206,19 @@ def save_results(
     versions = get_versions()
 
     header_has_phase = False
+    header_has_oak_vpu = False
+    header_has_power = False
     if file_exists:
         try:
             with open(RESULTS_FILE, "r") as f:
                 header = f.readline().strip().split(",")
                 header_has_phase = "Phase" in header
+                header_has_oak_vpu = "OAK_VPU_Inference_ms_Mean" in header
+                header_has_power = "Power_W_Mean" in header
         except Exception:
             header_has_phase = False
+            header_has_oak_vpu = False
+            header_has_power = False
 
     with open(RESULTS_FILE, "a", newline="") as f:
         writer = csv.writer(f)
@@ -1057,6 +1271,9 @@ def save_results(
                     "EMC_Mean",
                     "EMC_P95",
                     "EMC_Max",
+                    "Power_W_Mean",
+                    "Power_W_P95",
+                    "Power_W_Max",
                     "OAK_LeonCSS_CPU_Pct_Mean",
                     "OAK_LeonCSS_CPU_Pct_P95",
                     "OAK_LeonCSS_CPU_Pct_Max",
@@ -1066,6 +1283,9 @@ def save_results(
                     "OAK_CMX_Used_MB_Mean",
                     "OAK_CMX_Used_MB_P95",
                     "OAK_CMX_Used_MB_Max",
+                    "OAK_VPU_Inference_ms_Mean",
+                    "OAK_VPU_Inference_ms_P95",
+                    "OAK_VPU_Inference_ms_Max",
                     # ORT config tracking (Phase 4)
                     "ORT_Level_Requested",
                     "Providers_Used",
@@ -1091,6 +1311,16 @@ def save_results(
         elif not header_has_phase:
             print(
                 "[Warning] CSV header sans colonne 'Phase'. "
+                "Supprimez le fichier pour regenerer un header complet."
+            )
+        elif not header_has_oak_vpu:
+            print(
+                "[Warning] CSV header sans colonne 'OAK_VPU_Inference_ms_*'. "
+                "Supprimez le fichier pour regenerer un header complet."
+            )
+        elif not header_has_power:
+            print(
+                "[Warning] CSV header sans colonne 'Power_W_*'. "
                 "Supprimez le fichier pour regenerer un header complet."
             )
         writer.writerow(
@@ -1141,6 +1371,9 @@ def save_results(
                 fmt(monitor_stats.get("emc_mean")),
                 fmt(monitor_stats.get("emc_p95")),
                 fmt(monitor_stats.get("emc_max")),
+                fmt(monitor_stats.get("power_w_mean")),
+                fmt(monitor_stats.get("power_w_p95")),
+                fmt(monitor_stats.get("power_w_max")),
                 fmt(monitor_stats.get("oak_leon_css_cpu_pct_mean")),
                 fmt(monitor_stats.get("oak_leon_css_cpu_pct_p95")),
                 fmt(monitor_stats.get("oak_leon_css_cpu_pct_max")),
@@ -1150,6 +1383,9 @@ def save_results(
                 fmt(monitor_stats.get("oak_cmx_used_mb_mean")),
                 fmt(monitor_stats.get("oak_cmx_used_mb_p95")),
                 fmt(monitor_stats.get("oak_cmx_used_mb_max")),
+                fmt(monitor_stats.get("oak_vpu_ms_mean")),
+                fmt(monitor_stats.get("oak_vpu_ms_p95")),
+                fmt(monitor_stats.get("oak_vpu_ms_max")),
                 # ORT config tracking (Phase 4)
                 ort_level_requested,
                 providers_used,
@@ -1826,6 +2062,14 @@ def benchmark_gpu_ort(
             print(f"  {idx + 1}/{len(dataset_items)} images...")
 
     monitor_stats = stop_resource_monitor(monitor)
+    if monitor and monitor.power_enabled and monitor.samples:
+        append_power_timeseries_csv(
+            ROOT_DIR / "power_timeseries.csv",
+            hardware=hardware,
+            model_name=model_name,
+            phase="run",
+            samples=monitor.samples,
+        )
 
     print("\nCalcul des metriques...")
     metrics = compute_map50_prf1(
@@ -2121,6 +2365,14 @@ def benchmark_cpu_ort(
             print(f"  {idx + 1}/{len(dataset_items)} images...")
 
     monitor_stats = stop_resource_monitor(monitor)
+    if monitor and monitor.power_enabled and monitor.samples:
+        append_power_timeseries_csv(
+            ROOT_DIR / "power_timeseries.csv",
+            hardware=hardware,
+            model_name=model_name,
+            phase="run",
+            samples=monitor.samples,
+        )
 
     print("\nCalcul des metriques...")
     metrics = compute_map50_prf1(
@@ -2345,6 +2597,14 @@ def benchmark_gpu_ultralytics(
             all_ground_truths.append(gt_list)
 
     monitor_stats = stop_resource_monitor(monitor)
+    if monitor and monitor.power_enabled and monitor.samples:
+        append_power_timeseries_csv(
+            ROOT_DIR / "power_timeseries.csv",
+            hardware="GPU_Ultralytics",
+            model_name=model_name,
+            phase="run",
+            samples=monitor.samples,
+        )
 
     metrics = compute_map50_prf1(
         all_predictions, all_ground_truths, conf_op=CONF_OP, iou_thr=MATCH_IOU
@@ -2422,6 +2682,9 @@ def benchmark_oak(
     Args:
         host_tag: Tag identifiant le host (ex: PC, PI4). Auto-detecte si None.
     """
+    if monitor_enabled and os.environ.get("DEPTHAI_LEVEL") is None:
+        os.environ["DEPTHAI_LEVEL"] = "trace"
+        print("[OAK] DEPTHAI_LEVEL=trace active pour VPU timings.")
 
     import depthai as dai
 
@@ -2526,6 +2789,20 @@ def benchmark_oak(
             "oak_cmx_used_mb_max": cmx_max,
         }
 
+    vpu_inference_ms = []
+    vpu_trace_pat = re.compile(r"NeuralNetwork inference took '([0-9.]+)' ms")
+
+    def _on_oak_log(msg):
+        payload = getattr(msg, "payload", None)
+        if payload is None:
+            payload = getattr(msg, "message", "")
+        match = vpu_trace_pat.search(str(payload))
+        if match:
+            try:
+                vpu_inference_ms.append(float(match.group(1)))
+            except ValueError:
+                pass
+
     # Pipeline DepthAI
     pipeline = dai.Pipeline()
 
@@ -2574,6 +2851,14 @@ def benchmark_oak(
             if monitor_enabled
             else None
         )
+        log_cb_id = None
+        if monitor_enabled:
+            try:
+                device.setLogLevel(dai.LogLevel.TRACE)
+                device.setLogOutputLevel(dai.LogLevel.WARN)
+                log_cb_id = device.addLogCallback(_on_oak_log)
+            except Exception:
+                log_cb_id = None
 
         idle_oak_stats = {}
         if idle_state and not idle_state.get("done") and monitor_enabled:
@@ -2621,6 +2906,9 @@ def benchmark_oak(
             dai_frame.setData(img_chw.reshape(-1))
             q_in.send(dai_frame)
             _ = q_out.get()
+
+        if vpu_inference_ms:
+            vpu_inference_ms.clear()
 
         monitor = start_resource_monitor(
             monitor_enabled, "oak", monitor_interval_ms, monitor_gpu_index
@@ -2744,9 +3032,23 @@ def benchmark_oak(
                         oak_cmx_used_mb.append(cmx_used)
 
         monitor_stats = stop_resource_monitor(monitor)
+        if monitor and monitor.power_enabled and monitor.samples:
+            append_power_timeseries_csv(
+                ROOT_DIR / "power_timeseries.csv",
+                hardware=hardware,
+                model_name=model_name,
+                phase="run",
+                samples=monitor.samples,
+            )
+        if log_cb_id is not None and hasattr(device, "removeLogCallback"):
+            try:
+                device.removeLogCallback(log_cb_id)
+            except Exception:
+                pass
     leon_mean, leon_p95, leon_max = _stats(oak_leon_css)
     ddr_mean, ddr_p95, ddr_max = _stats(oak_ddr_used_mb)
     cmx_mean, cmx_p95, cmx_max = _stats(oak_cmx_used_mb)
+    vpu_mean, vpu_p95, vpu_max = _stats(vpu_inference_ms)
     monitor_stats.update(
         {
             "oak_leon_css_cpu_pct_mean": leon_mean,
@@ -2758,6 +3060,9 @@ def benchmark_oak(
             "oak_cmx_used_mb_mean": cmx_mean,
             "oak_cmx_used_mb_p95": cmx_p95,
             "oak_cmx_used_mb_max": cmx_max,
+            "oak_vpu_ms_mean": vpu_mean,
+            "oak_vpu_ms_p95": vpu_p95,
+            "oak_vpu_ms_max": vpu_max,
         }
     )
 
@@ -2780,6 +3085,10 @@ def benchmark_oak(
     print(f"  Preprocess        : {timing['preprocess_ms']:.2f} ms")
     print(f"  Inference (USB+VPU): {timing['inference_ms']:.2f} ms")
     print(f"  Postprocess       : {timing['postprocess_ms']:.2f} ms")
+    if vpu_mean is not None:
+        print(
+            f"  VPU inference (trace): {vpu_mean:.2f} ms (p95 {vpu_p95:.2f}, max {vpu_max:.2f})"
+        )
     print(
         f"Latence p50/p90/p99 : {timing['latency_p50']:.2f} / {timing['latency_p90']:.2f} / {timing['latency_p99']:.2f} ms"
     )
@@ -3111,6 +3420,14 @@ def _benchmark_orin_trt(
             print(f"  {idx + 1}/{len(dataset_items)} images...")
 
     monitor_stats = stop_resource_monitor(monitor)
+    if monitor and monitor.power_enabled and monitor.samples:
+        append_power_timeseries_csv(
+            ROOT_DIR / "power_timeseries.csv",
+            hardware="Jetson_Orin_TRT",
+            model_name=model_name,
+            phase="run",
+            samples=monitor.samples,
+        )
 
     print("\nCalcul des metriques...")
     metrics = compute_map50_prf1(
@@ -3321,6 +3638,14 @@ def _benchmark_orin_ultralytics(
                 print(f"  {idx + 1}/{len(dataset_items)} images...")
 
     monitor_stats = stop_resource_monitor(monitor)
+    if monitor and monitor.power_enabled and monitor.samples:
+        append_power_timeseries_csv(
+            ROOT_DIR / "power_timeseries.csv",
+            hardware="Jetson_Orin_Ultralytics",
+            model_name=model_name,
+            phase="run",
+            samples=monitor.samples,
+        )
 
     print("\nCalcul des metriques...")
     metrics = compute_map50_prf1(
@@ -3463,8 +3788,8 @@ def main():
     parser.add_argument(
         "--repeat",
         type=int,
-        default=1,
-        help="Nombre de repetitions par run (defaut: 1)",
+        default=3,
+        help="Nombre de repetitions par run (defaut: 3)",
     )
     parser.add_argument(
         "--idle-seconds",
@@ -3503,6 +3828,36 @@ def main():
         default=0,
         help="Index GPU pour nvidia-smi (defaut: 0)",
     )
+    parser.add_argument(
+        "--tapo-ip",
+        type=str,
+        default=None,
+        help="IP Tapo P110/P110M (ou env TAPO_IP) pour power logging",
+    )
+    parser.add_argument(
+        "--tapo-user",
+        type=str,
+        default=None,
+        help="Email Tapo (ou env TAPO_USER/TAPO_USERNAME)",
+    )
+    parser.add_argument(
+        "--tapo-password",
+        type=str,
+        default=None,
+        help="Mot de passe Tapo (ou env TAPO_PASSWORD)",
+    )
+    parser.add_argument(
+        "--tapo-interval-s",
+        type=float,
+        default=2.0,
+        help="Intervalle de polling Tapo en secondes (defaut: 2)",
+    )
+    parser.add_argument(
+        "--tapo-power-scale",
+        type=float,
+        default=1.0,
+        help="Facteur pour convertir current_power en W (defaut: 1)",
+    )
 
     args = parser.parse_args()
 
@@ -3517,6 +3872,35 @@ def main():
         parser.error("--idle-seconds doit etre >= 0")
     if args.idle_sample_hz < 1:
         parser.error("--idle-sample-hz doit etre >= 1")
+
+    tapo_ip = args.tapo_ip or os.getenv("TAPO_IP")
+    tapo_user = args.tapo_user or os.getenv("TAPO_USER") or os.getenv("TAPO_USERNAME")
+    tapo_password = args.tapo_password or os.getenv("TAPO_PASSWORD")
+    tapo_interval_s = args.tapo_interval_s
+    env_interval = os.getenv("TAPO_INTERVAL_S") or os.getenv("TAPO_INTERVAL")
+    if env_interval:
+        try:
+            tapo_interval_s = float(env_interval)
+        except ValueError:
+            parser.error("TAPO_INTERVAL_S doit etre un nombre")
+    if tapo_ip:
+        if not tapo_user or not tapo_password:
+            parser.error(
+                "Tapo power monitoring requiert --tapo-user/--tapo-password "
+                "ou TAPO_USER/TAPO_USERNAME et TAPO_PASSWORD."
+            )
+        if tapo_interval_s <= 0:
+            parser.error("--tapo-interval-s doit etre > 0")
+        if args.tapo_power_scale <= 0:
+            parser.error("--tapo-power-scale doit etre > 0")
+        global POWER_MONITOR_CONFIG
+        POWER_MONITOR_CONFIG = {
+            "ip": tapo_ip,
+            "user": tapo_user,
+            "password": tapo_password,
+            "power_interval_s": tapo_interval_s,
+            "power_scale": args.tapo_power_scale,
+        }
 
     if args.target == "4070" and not args.model:
         if args.backend != "ort":
