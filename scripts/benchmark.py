@@ -10,6 +10,7 @@ Usage:
     python scripts/benchmark.py --target cpu --model models/variants/yolo11n_640_fp32.onnx --host-tag PC --cpu-threads 8
     python scripts/benchmark.py --target cpu --model models/variants/yolo11n_320_fp32.onnx --host-tag PI4 --cpu-threads 4
     python scripts/benchmark.py --target cpu
+    # Raspberry Pi 4 (sweep n-only par defaut)
     python scripts/benchmark.py --target pi4
 
     # OAK-D (Myriad X VPU)
@@ -131,6 +132,7 @@ ROOT_DIR = Path(__file__).parent.parent.resolve()
 RESULTS_FILE = ROOT_DIR / "benchmark_results.csv"
 DEFAULT_VARIANTS_DIR = ROOT_DIR / "models" / "variants"
 DEFAULT_SWEEP_SCALES = ["m", "s", "n"]
+DEFAULT_PI4_SWEEP_SCALES = ["n"]
 DEFAULT_SWEEP_RESOLUTIONS = [640, 512, 416, 320, 256]
 DEFAULT_SWEEP_QUANTS = ["fp32", "fp16"]
 DEFAULT_SWEEP_ORT_LEVELS = ["all", "basic", "disable"]
@@ -256,9 +258,12 @@ def compute_timing_stats(
     }
 
 
-def get_default_variant_paths(variants_dir: Path) -> list[Path]:
+def get_default_variant_paths(
+    variants_dir: Path, scales: list[str] | None = None
+) -> list[Path]:
+    scales = scales or DEFAULT_SWEEP_SCALES
     paths = []
-    for scale in DEFAULT_SWEEP_SCALES:
+    for scale in scales:
         for imgsz in DEFAULT_SWEEP_RESOLUTIONS:
             for quant in DEFAULT_SWEEP_QUANTS:
                 name = f"yolo11{scale}_{imgsz}_{quant}.onnx"
@@ -343,6 +348,7 @@ def benchmark_cpu_ort_sweep(
     monitor_enabled: bool,
     monitor_interval_ms: int,
     monitor_gpu_index: int,
+    sweep_scales: list[str] | None = None,
     repeat: int = 1,
     idle_seconds: int = 0,
     idle_sample_hz: int = 2,
@@ -357,15 +363,14 @@ def benchmark_cpu_ort_sweep(
     print("BENCHMARK CPU - ORT SWEEP")
     print("=" * 60)
     print(f"Variantes : {variants_dir}")
-    print(
-        f"Models    : {', '.join([f'yolo11{s}' for s in DEFAULT_SWEEP_SCALES])}"
-    )
+    scales = sweep_scales or DEFAULT_SWEEP_SCALES
+    print(f"Models    : {', '.join([f'yolo11{s}' for s in scales])}")
     print(f"Resolutions: {', '.join(map(str, DEFAULT_SWEEP_RESOLUTIONS))}")
     print(f"Quantifs  : {', '.join(DEFAULT_SWEEP_QUANTS)}")
     print(f"ORT levels: {', '.join(DEFAULT_SWEEP_ORT_LEVELS)}")
 
     idle_state = {"done": False}
-    for model_path in get_default_variant_paths(variants_dir):
+    for model_path in get_default_variant_paths(variants_dir, scales=scales):
         if not model_path.exists():
             print(f"[SKIP] {model_path} (introuvable)")
             missing += 1
@@ -3934,6 +3939,7 @@ def main():
             monitor_enabled=args.monitor,
             monitor_interval_ms=args.monitor_interval_ms,
             monitor_gpu_index=args.monitor_gpu,
+            sweep_scales=None,
             repeat=args.repeat,
             idle_seconds=args.idle_seconds,
             idle_sample_hz=args.idle_sample_hz,
@@ -3952,6 +3958,7 @@ def main():
             monitor_enabled=args.monitor,
             monitor_interval_ms=args.monitor_interval_ms,
             monitor_gpu_index=args.monitor_gpu,
+            sweep_scales=DEFAULT_PI4_SWEEP_SCALES,
             repeat=args.repeat,
             idle_seconds=args.idle_seconds,
             idle_sample_hz=args.idle_sample_hz,
