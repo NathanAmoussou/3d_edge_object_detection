@@ -7,7 +7,7 @@ et compile vers le format natif de chaque hardware.
 Main usage:
     To generate all yolo11{m,s,n}_{640,512,416,320,256}_fp16_{4,5,6,7,8}shave.blob variants for OAK:
         python scripts/compile.py --target oak
-    To generate all Orin TRT variants (m/s/n, 640-256, fp32/fp16, builder 3/4/5, sparsity on/off):
+    To generate all Orin TRT variants (m/s/n, 640-256, fp32/fp16, heuristic on/off, sparsity on/off):
         python scripts/compile.py --target orin_trt
 
 Options (debug only)::
@@ -23,7 +23,7 @@ Targets:
     - 4070/cpu: Retourne l'ONNX tel quel (inference via ONNX Runtime)
     - oak: Compile ONNX -> BLOB (Myriad X, FP16, shaves configurable)
     - orin: Compile ONNX -> ENGINE (TensorRT, sur Jetson)
-    - orin_trt: Sweep TensorRT sur variants m/s/n, 640-256, fp32/fp16, builder 3/4/5, sparsity on/off
+    - orin_trt: Sweep TensorRT sur variants m/s/n, 640-256, fp32/fp16, heuristic on/off, sparsity on/off
 
 OAK Shaves:
     Le nombre de SHAVE cores est un parametre de compilation (pas modifiable a runtime).
@@ -56,7 +56,7 @@ DEFAULT_ORIN_TRT_TRANSFORMED_DIR = ROOT_DIR / "models" / "transformed"
 DEFAULT_ORIN_TRT_SCALES = ["m", "s", "n"]
 DEFAULT_ORIN_TRT_RESOLUTIONS = [640, 512, 416, 320, 256]
 DEFAULT_ORIN_TRT_PRECS = ["fp32", "fp16"]
-DEFAULT_ORIN_TRT_BUILDER_LEVELS = [3, 4, 5]
+DEFAULT_ORIN_TRT_HEURISTIC = [False, True]
 DEFAULT_ORIN_TRT_SPARSITY = [False, True]
 
 # Domaines ONNX internes a ORT (non portables vers TRT/OpenVINO)
@@ -325,7 +325,7 @@ def compile_orin_trt_sweep(
     print(f"Scales     : {DEFAULT_ORIN_TRT_SCALES}")
     print(f"Resolutions: {DEFAULT_ORIN_TRT_RESOLUTIONS}")
     print(f"Precisions : {DEFAULT_ORIN_TRT_PRECS}")
-    print(f"Builder    : {DEFAULT_ORIN_TRT_BUILDER_LEVELS}")
+    print(f"Heuristic  : {DEFAULT_ORIN_TRT_HEURISTIC}")
     print(f"Sparsity   : {DEFAULT_ORIN_TRT_SPARSITY}")
     print(f"Output     : {output_dir}")
 
@@ -348,9 +348,9 @@ def compile_orin_trt_sweep(
                         print(f"[SKIP] {model_path} (introuvable)")
                     continue
 
-                for level in DEFAULT_ORIN_TRT_BUILDER_LEVELS:
+                for heuristic in DEFAULT_ORIN_TRT_HEURISTIC:
                     for sparsity in DEFAULT_ORIN_TRT_SPARSITY:
-                        suffix = f"_trt_b{level}_sp{int(sparsity)}"
+                        suffix = f"_trt_h{int(heuristic)}_sp{int(sparsity)}"
                         expected = (
                             Path(output_dir) / f"{model_path.stem}{suffix}.engine"
                         )
@@ -363,7 +363,7 @@ def compile_orin_trt_sweep(
                             str(model_path),
                             output_dir,
                             fp16=prec != "fp32",
-                            builder_opt_level=level,
+                            heuristic=heuristic,
                             sparsity=sparsity,
                             engine_suffix=suffix,
                         )
@@ -436,7 +436,7 @@ def compile_for_orin(
     output_dir: str,
     fp16: bool = True,
     workspace_mb: int = 4096,
-    builder_opt_level: int | None = None,
+    heuristic: bool = False,
     sparsity: bool = False,
     engine_suffix: str | None = None,
 ) -> str:
@@ -455,7 +455,7 @@ def compile_for_orin(
         fp16: Utiliser FP16 (recommande pour Orin)
         workspace_mb: Taille du workspace TensorRT en MB (defaut: 4096)
                       Reduire si RAM limitee (ex: 2048 pour Orin Nano 4GB)
-        builder_opt_level: Niveau d'optimisation builder TensorRT (0-5)
+        heuristic: Active l'option --heuristic de trtexec si disponible
         sparsity: Activer la sparsity TensorRT si disponible
         engine_suffix: Suffixe a ajouter au nom de l'engine/log
     """
@@ -538,8 +538,8 @@ def compile_for_orin(
     elif fp16:
         cmd.append("--fp16")
 
-    if builder_opt_level is not None:
-        cmd.append(f"--builderOptimizationLevel={builder_opt_level}")
+    if heuristic:
+        cmd.append("--heuristic")
 
     if sparsity:
         cmd.append("--sparsity=enable")

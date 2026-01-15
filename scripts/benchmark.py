@@ -3233,6 +3233,13 @@ def _benchmark_orin_trt(
     import pycuda.driver as cuda
     import tensorrt as trt
 
+    engine_stem = Path(model_path).stem
+    match = re.search(r"_trt_h(\d)_sp(\d)", engine_stem)
+    if match:
+        hardware = f"Jetson_Orin_TRT_H{match.group(1)}_SP{match.group(2)}"
+    else:
+        hardware = "Jetson_Orin_TRT"
+
     # Mapping TensorRT dtype -> numpy dtype
     TRT_TO_NP_DTYPE = {
         trt.DataType.FLOAT: np.float32,
@@ -3286,7 +3293,7 @@ def _benchmark_orin_trt(
         monitor_enabled=monitor_enabled,
         monitor_target="orin",
         monitor_gpu_index=monitor_gpu_index,
-        hardware="Jetson_Orin_TRT",
+        hardware=hardware,
         dataset=dataset,
         backend="tensorrt",
         providers_used="N/A",
@@ -3428,7 +3435,7 @@ def _benchmark_orin_trt(
     if monitor and monitor.power_enabled and monitor.samples:
         append_power_timeseries_csv(
             ROOT_DIR / "power_timeseries.csv",
-            hardware="Jetson_Orin_TRT",
+            hardware=hardware,
             model_name=model_name,
             phase="run",
             samples=monitor.samples,
@@ -3463,7 +3470,7 @@ def _benchmark_orin_trt(
     print(f"F1-Score            : {metrics['f1']:.4f}")
 
     save_results(
-        hardware="Jetson_Orin_TRT",
+        hardware=hardware,
         model_name=model_name,
         size_mb=size_mb,
         imgsz=imgsz,
