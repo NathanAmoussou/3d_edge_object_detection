@@ -1,0 +1,343 @@
+\documentclass[12pt,a4paper]{article}
+
+% Encodage et polices
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+
+% Packages essentiels
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{subcaption}
+\usepackage{float}
+\usepackage{enumitem}
+\usepackage{cite}
+\usepackage{xurl}
+
+% Mise en page
+\usepackage{geometry}
+\geometry{margin=25mm}
+
+\usepackage{setspace}
+\usepackage{titlesec}
+\titleformat{\section}{\Large\bfseries}{\thesection}{1em}{}
+\titleformat{\subsection}{\large\bfseries}{\thesubsection}{1em}{}
+
+% En-têtes et pieds de page
+\usepackage{fancyhdr}
+\setlength{\headheight}{15pt}
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{Université Côte d'Azur}
+\fancyhead[R]{\leftmark}
+\fancyfoot[L]{Noé Florence Report}
+\fancyfoot[C]{Page \thepage/23}
+\fancyfoot[R]{\today}
+
+\fancypagestyle{plain}{
+  \fancyhf{}
+  \renewcommand{\headrulewidth}{0pt}
+  \renewcommand{\footrulewidth}{0pt}
+}
+
+% Hyperliens (à charger en dernier)
+\usepackage{hyperref}
+\usepackage[french]{cleveref}
+
+\begin{document}
+% Titre et auteur
+\title{}
+\author{}
+\date{}
+
+\begin{titlepage}
+    \centering
+    \includegraphics[width=0.6\textwidth]{UCA-Logo-2niveaux-RVB.png}
+
+    {\scshape\LARGE University Côte d'Azur \par}
+    \vspace{1.5cm}
+
+    \textsc{\Large Edge Computing et IA embarquée }\par
+    \vspace{1.5cm}
+    
+    {\Huge\bfseries Optimisation de la détection d'objets embarquée pour système IOT-CPS : Approche YOLOv11  \par}
+    \vspace{2cm}
+    {\Large\itshape 
+    \textbf{Author:} \\  Noé Florence, Nathan Amoussou, Louis  \par
+
+    }
+    \vspace{1cm}
+
+        {\large \textbf{Professeur:} \\  Gerad Rocher\par}
+    \vfill
+
+    {\large \textbf{ } \\
+ \par}
+    \vfill
+    {\large \textbf{} \\ \par}
+   \vfill
+    
+    % Facultatif : Superviseur
+    \vspace{0.8cm}
+    
+\end{titlepage}
+
+
+
+% Appliquer le style 'plain' à la première page pour qu'elle n'ait pas d'en-têtes ni de pieds de page
+\thispagestyle{plain}
+
+% --- Contenu du Document ---
+\newpage
+
+
+
+
+\maketitle
+
+% \section{Context of the project and objectives}
+
+\section{Introduction}
+
+% Rappel du projet et de son intérêt, optimiser modèles IA parce que puissance de calcul limitée sur de l'embarquée et parfois pas de possibilitée pratique d'utiliser un modèle dans le cloud, et aussi parce que la pratique d'optimiser des modèles via différents levier, sur le hardware et directement le modèle, est répandue et accessible aujourd'hui
+
+% Dans ce projet décrit dans ce rapport on va prendre un modèle d'ia et une sélection de hardware (décrit dans section ...), appliquer différentes couches et combinaisons d'optimisations (décrit dans scetion ...), et évaluer les performances et différentes métriques de consommation et performance sur différents hardwares en s'assurant que ces comparaisons sont le plus fair possible (décrit dans ...) et conclure sur la ou les combinaisons d'optim les plus intéressantes par hardware.
+
+L’essor de l'informatique embarquée (ville intelligente, robotique, véhicules autonomes, santé connectée, etc.) s’accompagne d’un besoin croissant de déployer des modèles d’intelligence artificielle (IA) au plus proche des capteurs et des actionneurs. % Vérifier terme informatique embarquée
+Ce déplacement du \textit{cloud} vers l’\textit{edge} est motivé à la fois par des contraintes pratiques (connectivité intermittente, coûts de transfert, confidentialité) et par des exigences techniques (faible latence, robustesse en temps réel), tout en restant limité par les ressources disponibles sur l’embarqué (mémoire, puissance de calcul, énergie). % Expliquer ou remplacer edge et cloud
+Dans ce contexte, l’optimisation de modèles---via des leviers agissant sur le modèle lui-même et sur l’exploitation du matériel---est devenue une pratique répandue et de plus en plus accessible grâce aux outils et écosystèmes actuels.
+
+Dans cette logique, le projet présenté dans ce rapport consiste à, partant d’un modèle d’IA et d’une sélection de plateformes matérielles (décrites en \cref{sec:contexte}), appliquer plusieurs couches d’optimisations (décrites en \cref{sec:benchmarking,subsec:optimisations_appliquees}). 
+Nous mesurons ensuite l’impact de ces choix sur des métriques de performance et de coût en veillant à rendre les comparaisons aussi équitables que possible via un protocole commun (décrit en \cref{subsec:protocole_de_benchmarking,sec:resultats}). 
+L’objectif final est d’identifier, pour chaque plateforme, les compromis les plus pertinents et de conclure sur la ou les combinaisons d’optimisations offrant le meilleur équilibre entre efficacité et qualité d’inférence, par exemple (\cref{sec:analyse_et_conclusion}). 
+
+\section{Contexte} \label{sec:contexte} 
+% TODO : Modifier le titre
+
+\subsection{Architecture à optimiser} % TODO : Modifier le titre/utiliser un \paragraph?
+
+% Comme modèle d'IA à optimiser, on a choisit un modèle de vision/détection, c'est un modèle d'IA, qui reçoit une image en entrée (ou une vidéo sous forme d'une succession continue d'image) et retourne la position d'un ou de plusieurs objets spécifiques détectées dans l'image, objets pour lesquels ce modèle à été entrainé spécifiquement. Le modèle spécifique c'est YOLOv11 d'ultralytic, un modèle publié en telle année, avec telles caractéristiques (taille, cas d'usage, recognition, etc.). On a choisit ce modèle parce que il est représentatif des modèles/cas d'usage utilisées en EDGE/Embarqué/IOT, et aussi parce que pour faire le pont avec nos nécessité pour le porjet d'IOT, on s'intéresse aux modèles de vision.
+
+Comme architecture d'IA à optimiser, nous avons choisi un modèle de vision par ordinateur dédié à la détection d’objets. 
+Ce type de réseau reçoit en entrée une image (ou une séquence d’images pour une vidéo) et produit en sortie un ensemble de prédictions décrivant où se trouvent les objets d’intérêt et de quel type ils sont : typiquement des boîtes englobantes (\textit{bounding boxes}), associées à une classe et à un score de confiance. 
+Dans la suite, l’ensemble de nos optimisations viseront donc à accélérer et/ou alléger cette chaîne d’inférence tout en contrôlant la dégradation éventuelle de la qualité de détection.
+
+Dans ce cadre, nous choisissons \href{https://docs.ultralytics.com/fr/models/yolo11/}{YOLO11}, une famille de détecteurs d’objets temps réel publiée par l’entreprise américaine Ultralytics en septembre 2024.
+Cette gamme est conçue pour offrir un bon compromis entre précision, vitesse et efficacité et est explicitement pensée pour être déployée dans des environnements variés (du GPU aux dispositifs \textit{edge}).
+Ce choix est motivé à la fois par le caractère très représentatif de YOLO pour des cas d’usage \textit{edge}/embarqué, et par l’adéquation avec nos besoins de projet centrés sur la vision.
+
+\subsection{Matériel}
+
+% Matériels sur lesquels optimiser puis tester le modèle d'IA divisé en deux caté :
+% 1) Réference, non-edge, non embarqué, pas notre cible principal, à titre indicatif et de comparaison avec edge
+% - un GPU 4070 laptop, 8GB vRAM, 32GB RAM
+% - Un CPU i9 14900 HX 32GB ram
+% 2) Matériel edge pour notre cas d'usage
+% - une Pi4 (avec son CPU, checker en ligne)
+% - un nvidia jetson orin nano 4GB (on s'intéresse au GPU)
+% - une luxonis OAK D Pro (on s'intéresse au VPU myriad accélérateur)
+
+À la suite du choix de l’architecture IA et afin d’évaluer l’effet des optimisations dans des conditions réalistes, nous testons l’inférence sur un ensemble de plateformes hétérogènes. 
+Nous distinguons d’abord deux machines de référence---qui ne constituent pas notre cible principale \textit{edge}/embarqué, mais servent de point de comparaison indicatif---: un PC portable équipé d’un GPU NVIDIA RTX 4070 (8 Go de VRAM) et de 32 Go de RAM, ainsi qu’un CPU Intel Core i9-14900HX (24 cœurs / 32 \textit{threads}, 32 Go de RAM).
+
+Pour coller à notre cas d’usage \textit{edge}, nous retenons également trois dispositifs représentatifs de familles d’accélération différentes. 
+Le Raspberry Pi 4 constitue une cible CPU-\textit{only} (Cortex-A72, quatre cœurs/\textit{threads}) où l’on cherche surtout à maîtriser les performances sous fortes contraintes. 
+Le NVIDIA Jetson Orin Nano 4GB apporte un GPU embarqué (architecture Ampere, 512 cœurs CUDA et 16 Tensor Cores) et 4 Go de LPDDR5, ce qui en fait une plateforme adaptée à l’exploration d’optimisations tirant parti du calcul parallèle. 
+Enfin, la Luxonis OAK-D Pro embarque un VPU Movidius Myriad X, typique d’une approche “accélérateur dédié” pour exécuter des modèles de vision efficacement à faible consommation.
+
+\section{Optimisations} \label{sec:benchmarking}
+
+% À partir du modèle et des hardwares clarifiés au-dessus, on a établi une liste de métriques de mesure d'une part dans subsec..., et d'optimisation dans subsec...
+
+\subsection{Contexte} \label{subsec:optimisations_appliquees}
+
+% TODO : Parler du fallback CPU sur INT8
+
+% Décrire bien les pipelines
+
+% Sur le modèle de vision retenue, on a appliqué ces optimisations (parfois séquentiellement parfois parallèlement);
+% - élagage (n, s, m)
+% - quantification (fp32, fp16)
+% - input resolution de l'image dans le modèle
+% On a aussi des optims spéxifiques à chaque hardware
+% - les différents runtimes en fonctino du hard
+% - fusion de couche en fonction du rt
+% - nb de shaves sur oak
+% - optims bins et sparsity sur trt et int8
+%  Ce qui nous fait un total de X variantes par hard/rt
+
+Afin de structurer notre exploration, nous regroupons les optimisations en quatre familles correspondant à un découpage $2\times2$ :
+(i) optimisations à la compilation vs (ii) optimisations au \textit{runtime}, et, dans chaque cas,
+(iii) optimisations agnostiques du matériel vs (iv) optimisations spécifiques à une plateforme.
+Intuitivement, la compilation regroupe tout ce qui transforme le modèle avant l’exécution (export, conversion de format, génération d’un moteur, choix de précision, etc.), tandis que le \textit{runtime} correspond aux réglages appliqués au moment de l’inférence/l'utilisation (p.\,ex. fusions de couches activées par le moteur, choix du niveau d’optimisation du graphe).
+Dans notre protocole, nous nous appuyons sur trois moteurs d’exécution (de \textit{runtime}) :
+\begin{enumerate}
+\item ONNX Runtime (ORT) pour exécuter des modèles au format ONNX (format standard décrivant un modèle IA sous forme d'un graphe de calcul),
+\item TensorRT (TRT) sur matériel NVIDIA (génération d’un modèle IA sous un format \textit{engine} optimisé),
+\item et le \textit{runtime} DepthAI sur OAK (exécution d’un modèle compilé au format \texttt{.blob} pour le VPU MyriadX).
+\end{enumerate}
+Le \cref{tab:runtimes_par_plateforme} récapitule, pour chaque plateforme matérielle, le ou les moteurs d’exécution (\emph{runtime}) retenus afin d’assurer une comparaison cohérente entre cibles.
+
+\begin{table}[ht]
+\centering
+\begin{tabular}{l l}
+\hline
+\textbf{Matériel cible} & \textbf{Moteur(s) utilisé(s)} \\
+\hline
+PC CPU & ORT \\
+PC GPU & ORT \\
+Pi 4 CPU & ORT \\
+Jeston Orin GPU & ORT \& TRT \\
+OAK-D Pro VPU & DepthAI RT \\
+\hline
+\end{tabular}
+\caption{Correspondance entre plateformes matérielles et moteurs d’exécution considérés.}
+\label{tab:runtimes_par_plateforme}
+\end{table}
+
+\newpage
+
+\subsection{Optimisations à la compilation}
+
+\subsubsection{Optimisations agnostiques matériel}
+
+Notre base d’expériences repose sur trois leviers, indépendants de la plateforme, qui modifient directement la complexité et/ou le coût numérique du modèle :
+\begin{itemize}
+\item Taille du modèle (élagage/variante de YOLO) : \{\texttt{n}, \texttt{s}, \texttt{m}\}.
+Une variante plus petite d'un modèle d'IA réduit typiquement le nombre de paramètres et d’opérations, donc la latence et la mémoire, au prix d’une précision potentiellement moindre.
+\item Résolution d’entrée du modèle : \{640, 512, 416, 320, 256\}.
+Une résolution d'image donnée en entrée au modèle plus faible diminue le coût de calcul (moins de pixels à traiter) et accélère l’inférence, mais peut dégrader la détection des petits objets.
+\item Quantification du modèle (précision flottante) : \{\texttt{FP32}, \texttt{FP16}\}.
+Passer en \texttt{FP16} réduit la bande passante mémoire et peut accélérer l’exécution sur du matériel qui l’exploite bien, avec un impact généralement limité sur la qualité.
+\end{itemize}
+% Ces trois axes définissent $3\times 5\times 2 = 30$ variantes de base.
+
+\subsubsection{Optimisations spécifiques matériel}
+
+Certaines optimisations dépendent directement de l’accélérateur ciblé :
+\begin{itemize}
+\item OAK-D Pro VPU --- nombre de SHAVEs : \{4, 5, 6, 7, 8\}.
+Les SHAVEs sont des processeurs vectoriels internes ; en allouer davantage peut améliorer le débit de certaines opérations, au prix d’une contention possible avec d’autres traitements sur l’appareil.
+\item Orin + TRT --- niveau d’optimisation du compilateur : \{3, 4, 5\}.
+Un niveau plus élevé peut permettre au moteur de compilation de chercher des stratégies plus performantes (souvent au prix d’un temps de compilation plus long).
+\item Orin + TRT --- \textit{sparsity} : \{\texttt{false}, \texttt{true}\}.
+Lorsque le modèle et le matériel le permettent, activer la \emph{sparsity} vise à tirer parti d’une accélération matérielle pour des poids structurés clairsemés.
+\end{itemize}
+
+\subsection{Optimisations au \textit{runtime} (agnostiques matériel)}
+
+\subsubsection{Optimisations agnostiques matériel}
+
+Au moment de l’exécution, nous évaluons un réglage portable via ORT :
+\begin{itemize}
+  \item Fusions/optimisations de graphe ORT : \{\texttt{DISABLE\_ALL}, \texttt{ENABLE\_BASIC}, \texttt{ENABLE\_EXTENDED}, \texttt{ENABLE\_ALL}\}.
+  L’objectif est de réduire le coût d’exécution (moins d’opérations, meilleure localité mémoire) sans changer la sémantique du modèle.
+\end{itemize}
+
+\subsubsection{Optimisations spécifiques plateforme}
+
+Nous n’avons pas retenu d’optimisations \textit{runtime} supplémentaires spécifiques à une plateforme (au-delà du choix du moteur lui-même, ORT vs TRT).
+
+\subsection{Récapitulatif}
+
+Le \cref{tab:optimisations_synthese} récapitule l’ensemble des optimisations étudiées, en distinguant celles appliquées à la compilation et au \textit{runtime}, ainsi que leur caractère agnostique ou spécifique à une plateforme.
+
+\begin{table}[ht]
+\centering
+\begin{tabular}{c l l}
+\hline
+ & \textbf{Compilation} & \textbf{\textit{Runtime}} \\
+\hline
+\textbf{Agnostique} &
+\begin{tabular}[t]{@{}l@{}}
+  Élagage (3 niveaux) \\
+  Résolution (5 niveaux) \\
+  Quantification (2 niveaux)
+\end{tabular}
+&
+Fusion (ORT, 3 niveaux)
+\\
+\hline
+\textbf{Spécifique} &
+\begin{tabular}[t]{@{}l@{}}
+  SHAVEs (OAK, 5 niveaux) \\
+  Optimisation (Orin + TRT, 3 niveaux) \\
+  \textit{Sparsity} (Orin + TRT, 2 niveaux)
+\end{tabular}
+&
+--- \\
+\hline
+\end{tabular}
+\caption{Synthèse des optimisations évaluées, par famille (compilation/\textit{runtime}) et par portée (agnostique/spécifique).}
+\label{tab:optimisations_synthese}
+\end{table}
+
+Ces optimisations sont globalement combinables : on peut, pour une plateforme donnée, composer les variantes « agnostiques compilation » (taille/résolution/précision) avec les options « spécifiques compilation » quand elles existent (p. ex. SHAVEs sur OAK, options de compilation sur TRT). En revanche, les réglages \textit{runtime} dépendent du moteur d’exécution : la fusion ORT ne s’applique qu’avec ONNX Runtime, et les optimisations TensorRT (niveau d’optimisation, \textit{sparsity}) ne concernent que les modèles compilés en \textit{engine} TRT et exécutés via TRT. De plus, selon le matériel, le point de départ n’est pas identique (p. ex. OAK : FP16 uniquement).
+
+À partir de cette grille d’optimisations et des contraintes propres à chaque plateforme, nous pouvons établir ci-dessous un récapitulatif du nombre de variantes effectivement évaluables par matériel.
+
+\begin{itemize}
+\item PC GPU (ORT) : $3 \times 5 \times 2 \times 3 = 90$ variantes.
+\item PC CPU (ORT) : $3 \times 5 \times 2 \times 3 = 90$ variantes.
+\item Raspberry Pi 4 (ORT, \texttt{yolo11n} uniquement) : $1 \times 5 \times 2 \times 3 = 30$ variantes.
+\item Orin (ORT et TRT) :
+\begin{itemize}
+\item TRT : $3 \times 5 \times 2 \times 3 \times 2 = 180$ variantes,
+\item ORT : $3 \times 5 \times 2 \times 3 = 90$ variantes,
+\item Total Orin : $180 + 90 = 270$ variantes.
+\end{itemize}
+\item OAK (\texttt{FP16} uniquement, pas d'ORT) : $3 \times 5 \times 1 \times 5 = 75$ variantes.
+\end{itemize}
+
+
+\subsection{Métriques mesurées}
+
+% On a des métriques sur les performances du modèles, et des métriques sur l'utilisation du hardware.
+% Pour le modèle, on mesure :
+% - mAP
+% - Precision/recall/F1
+% - E2E runtime
+% - device time
+% - preprocess
+% - inference
+% - postprocess
+% - p50/p...
+% - FPS
+% On a aussi des métriques côtés hardwares :
+% - Utilisation de la puce
+% - Utilisation de la RAM
+% - température
+% - conso élec
+
+\subsection{Protocole de benchmarking} \label{subsec:protocole_de_benchmarking}
+
+% Pour benchmarker sur un hard donnée (même procédure pour tous les hards), on applique trois mesures to ensure fairness 1) mesure des métriques hardwares à vide pendant quelques secondes, sans faire tourner d'inférence, pour mesurer la consommation "de base" de l'OS et app en tâches de fond, 2) avant de lancer la vraie inférence, on fait une phase de préchauffage où vont va faire quelques run pour du beurre pour stabiliser le pipeline/modèle (expliquer un peu plus en détail ça), 3) on va répéter chaque expérience cinq fois, et on prendra la moyenne des résultats.
+
+% Parles des risques et incertitudes de mesures
+
+% Ensuite le benchmark conciste à, pour chaque hardware, définir point de départ (plus gros modèles qui puissent rentrer), puis swipe tous les modèles plus petits jusqu'au modèle le plus petit (mettre un pseudo algorithme), et enregistrer toutes les mesures dans un CSV. On a donc x mesures par hardware.
+
+\section{Résultats} \label{sec:resultats}
+
+\section{Analyse et conclusion} \label{sec:analyse_et_conclusion}
+
+
+% \section{Description du système}
+% \subsection{Identification des besoins capteurs} %Identification of the sensors, their sources of uncertainty, and working ranges
+% \subsection{Caracteristiques des capteurs }
+% \subsection{Sources d'incertitude}
+% \section{Sensor data pre-processing stage}
+% \subsection{Architecture du Pipeline d'Inférence sur OAK-D}
+% \section{NN architecture and computation graph description (il faut parler de yolo ici?)}
+% \subsection{YOLO11}
+% \section{Model optimisation process}
+% \subsection{Ingestion et Standardisation des Données}
+% \subsection{Entraînement et Transfer Learning}
+% \subsection{Génération Automatisée de Variantes}
+% \subsection{Compilation Spécifique au Matériel}
+% \section{Résultat} %Benchmark results
+% \subsection{Criteres d'évaluation}
+% \subsection{résultats par rapport au méteriel}
+% \subsection{résultat par rapport au modèle }
+% \section{Github repo and documentation}
+\end{document}
