@@ -435,7 +435,7 @@ def compile_for_orin(
     onnx_path: str,
     output_dir: str,
     fp16: bool = True,
-    workspace_mb: int = 4096,
+    workspace_mb: int = 2048,
     heuristic: bool = False,
     sparsity: bool = False,
     engine_suffix: str | None = None,
@@ -453,7 +453,7 @@ def compile_for_orin(
         onnx_path: Chemin vers le fichier ONNX
         output_dir: Dossier de sortie
         fp16: Utiliser FP16 (recommande pour Orin)
-        workspace_mb: Taille du workspace TensorRT en MB (defaut: 4096)
+        workspace_mb: Taille du workspace TensorRT en MB (defaut: 2048)
                       Reduire si RAM limitee (ex: 2048 pour Orin Nano 4GB)
         heuristic: Active l'option --heuristic de trtexec si disponible
         sparsity: Activer la sparsity TensorRT si disponible
@@ -534,8 +534,12 @@ def compile_for_orin(
         "trtexec",
         f"--onnx={onnx_path}",
         f"--saveEngine={engine_path}",
-        f"--workspace={workspace_mb}",
     ]
+
+    if "--memPoolSize" in help_txt:
+        cmd.append(f"--memPoolSize=workspace:{workspace_mb}")
+    else:
+        cmd.append(f"--workspace={workspace_mb}")
 
     # Si QDQ present, utiliser --int8 (explicit quantization)
     # Ajouter aussi --fp16 pour fallback sur les layers non-quantifies
@@ -565,11 +569,14 @@ def compile_for_orin(
 
     try:
         timeout_s = 3600 if fp16 else 1200
+        env = os.environ.copy()
+        env.setdefault("CUDA_MODULE_LOADING", "LAZY")
         result = subprocess.run(
             cmd,
             capture_output=True,
             text=True,
             timeout=timeout_s,
+            env=env,
         )
 
         # Sauvegarder stdout/stderr dans un fichier log
@@ -651,8 +658,8 @@ def main():
     parser.add_argument(
         "--workspace",
         type=int,
-        default=4096,
-        help="Workspace TensorRT en MB pour Orin (defaut: 4096). Reduire si RAM limitee.",
+        default=2048,
+        help="Workspace TensorRT en MB pour Orin (defaut: 2048). Reduire si RAM limitee.",
     )
     parser.add_argument(
         "--shaves",
