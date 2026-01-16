@@ -523,6 +523,13 @@ def compile_for_orin(
 
     import subprocess
 
+    try:
+        help_txt = subprocess.check_output(
+            ["trtexec", "--help"], text=True, stderr=subprocess.STDOUT
+        )
+    except Exception:
+        help_txt = ""
+
     cmd = [
         "trtexec",
         f"--onnx={onnx_path}",
@@ -544,15 +551,25 @@ def compile_for_orin(
     if sparsity:
         cmd.append("--sparsity=enable")
 
+    if "--skipInference" in help_txt:
+        cmd.append("--skipInference")
+    elif "--buildOnly" in help_txt:
+        cmd.append("--buildOnly")
+
+    timing_cache_path = Path(output_dir) / "timing.cache"
+    if "--timingCacheFile" in help_txt:
+        cmd.append(f"--timingCacheFile={timing_cache_path}")
+
     # Pas de NMS integre (on veut le meme postprocess que GPU/OAK)
     # Le modele ONNX a deja nms=False depuis generate_variants.py
 
     try:
+        timeout_s = 3600 if fp16 else 1200
         result = subprocess.run(
             cmd,
             capture_output=True,
             text=True,
-            timeout=600,  # 10 minutes max
+            timeout=timeout_s,
         )
 
         # Sauvegarder stdout/stderr dans un fichier log
