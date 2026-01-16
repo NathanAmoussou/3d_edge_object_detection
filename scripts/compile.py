@@ -435,7 +435,7 @@ def compile_for_orin(
     onnx_path: str,
     output_dir: str,
     fp16: bool = True,
-    workspace_mb: int = 2048,
+    workspace_mb: int = 512,
     heuristic: bool = False,
     sparsity: bool = False,
     engine_suffix: str | None = None,
@@ -453,7 +453,7 @@ def compile_for_orin(
         onnx_path: Chemin vers le fichier ONNX
         output_dir: Dossier de sortie
         fp16: Utiliser FP16 (recommande pour Orin)
-        workspace_mb: Taille du workspace TensorRT en MB (defaut: 2048)
+        workspace_mb: Taille du workspace TensorRT en MB (defaut: 512)
                       Reduire si RAM limitee (ex: 2048 pour Orin Nano 4GB)
         heuristic: Active l'option --heuristic de trtexec si disponible
         sparsity: Activer la sparsity TensorRT si disponible
@@ -658,8 +658,8 @@ def main():
     parser.add_argument(
         "--workspace",
         type=int,
-        default=2048,
-        help="Workspace TensorRT en MB pour Orin (defaut: 2048). Reduire si RAM limitee.",
+        default=512,
+        help="Workspace TensorRT en MB pour Orin (defaut: 512). Reduire si RAM limitee.",
     )
     parser.add_argument(
         "--shaves",
