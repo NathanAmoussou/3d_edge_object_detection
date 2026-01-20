@@ -38,6 +38,8 @@ TODO (Phase 4): Metadata preservation
     - Preserver la lineage: parent_onnx, transform_type, experiment_id
 """
 
+from __future__ import annotations
+
 import argparse
 import os
 import shutil
