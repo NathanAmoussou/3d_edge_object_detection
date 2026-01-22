@@ -26,6 +26,7 @@ import os
 import shutil
 from datetime import datetime
 from pathlib import Path
+from typing import List, Optional
 
 # --- Configuration ---
 ROOT_DIR = Path(__file__).parent.parent.resolve()
@@ -50,7 +51,7 @@ def _check_cuda() -> bool:
 
 
 # Cache pour CUDA disponible
-_cuda_available: bool | None = None
+_cuda_available: Optional[bool] = None
 
 
 def cuda_available() -> bool:
@@ -107,7 +108,7 @@ def export_variant(
     imgsz: int,
     quant: str,
     output_dir: Path,
-) -> str | None:
+) -> Optional[str]:
     """
     Exporte une variante ONNX.
 
@@ -191,12 +192,12 @@ def export_variant(
 
 def generate_all_variants(
     output_dir: Path,
-    models: list[str],
-    resolutions: list[int],
-    quantizations: list[str],
+    models: List[str],
+    resolutions: List[int],
+    quantizations: List[str],
     skip_existing: bool = False,
     dry_run: bool = False,
-) -> list[str]:
+) -> List[str]:
     """
     Genere toutes les variantes selon les bins specifies.
 

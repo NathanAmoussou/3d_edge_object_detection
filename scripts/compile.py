@@ -44,6 +44,7 @@ import argparse
 import os
 import shutil
 from pathlib import Path
+from typing import List, Optional, Tuple
 
 # --- Configuration ---
 ROOT_DIR = Path(__file__).parent.parent.resolve()
@@ -69,7 +70,7 @@ ORT_INTERNAL_DOMAINS = [
 ]
 
 
-def check_onnx_portability(onnx_path: str) -> tuple[bool, list[str]]:
+def check_onnx_portability(onnx_path: str) -> Tuple[bool, List[str]]:
     """
     Verifie si un ONNX contient des ops/domaines internes ORT.
 
@@ -271,9 +272,9 @@ def compile_for_oak(onnx_path: str, output_dir: str, shaves: int = 6) -> str:
 def compile_for_oak_sweep(
     onnx_path: str,
     output_dir: str,
-    shaves_list: list[int],
+    shaves_list: List[int],
     skip_existing: bool = False,
-) -> list[str]:
+) -> List[str]:
     """
     Compile plusieurs blobs OAK pour une liste de shaves.
     """
@@ -301,7 +302,7 @@ def compile_for_oak_sweep(
 
 def find_int8_variant(
     scale: str, imgsz: int, transformed_dir: Path
-) -> Path | None:
+) -> Optional[Path]:
     pattern = f"yolo11{scale}_{imgsz}_fp32_int8_qdq_*.onnx"
     matches = sorted(transformed_dir.glob(pattern))
     if not matches:
@@ -315,7 +316,7 @@ def find_int8_variant(
 def compile_orin_trt_sweep(
     output_dir: str,
     skip_existing: bool = False,
-) -> list[str]:
+) -> List[str]:
     variants_dir = DEFAULT_VARIANTS_DIR
     generated = []
     missing = 0
@@ -381,7 +382,7 @@ def compile_orin_trt_sweep(
     return generated
 
 
-def get_default_oak_variants(variants_dir: Path) -> list[Path]:
+def get_default_oak_variants(variants_dir: Path) -> List[Path]:
     paths = []
     for scale in DEFAULT_OAK_SCALES:
         for imgsz in DEFAULT_OAK_RESOLUTIONS:
@@ -392,9 +393,9 @@ def get_default_oak_variants(variants_dir: Path) -> list[Path]:
 
 def compile_oak_default_sweep(
     output_dir: str,
-    shaves_list: list[int],
+    shaves_list: List[int],
     skip_existing: bool = False,
-) -> list[str]:
+) -> List[str]:
     variants_dir = DEFAULT_VARIANTS_DIR
     if not variants_dir.exists():
         print(f"Erreur: Dossier variantes introuvable: {variants_dir}")
@@ -440,7 +441,7 @@ def compile_for_orin(
     workspace_mb: int = 512,
     heuristic: bool = False,
     sparsity: bool = False,
-    engine_suffix: str | None = None,
+    engine_suffix: Optional[str] = None,
 ) -> str:
     """
     Compile ONNX -> ENGINE pour Jetson Orin (TensorRT).
