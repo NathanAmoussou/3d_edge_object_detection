@@ -33,7 +33,7 @@
 \fancyhead[L]{Université Côte d'Azur}
 \fancyhead[R]{\leftmark}
 \fancyfoot[L]{Noé Florence Report}
-\fancyfoot[C]{Page \thepage/23}
+\fancyfoot[C]{Page \thepage/19}
 \fancyfoot[R]{\today}
 
 \fancypagestyle{plain}{
@@ -56,32 +56,39 @@
 \begin{titlepage}
     \centering
     \includegraphics[width=0.6\textwidth]{UCA-Logo-2niveaux-RVB.png}
+    \vspace{1cm}
 
-    {\scshape\LARGE University Côte d'Azur \par}
+    {\scshape\LARGE Université Côte d'Azur \par}
     \vspace{1.5cm}
 
     \textsc{\Large Edge Computing et IA embarquée }\par
     \vspace{1.5cm}
     
-    {\Huge\bfseries Optimisation de la détection d'objets embarquée pour système IOT-CPS : Approche YOLOv11  \par}
+    {\Huge\bfseries Optimisation de la détection d'objets embarquée pour système IOT-CPS : Approche YOLOv11 \par}
+    
     \vspace{2cm}
-    {\Large\itshape 
-    \textbf{Author:} \\  Noé Florence, Nathan Amoussou, Louis  \par
 
+    % --- Modification : Plus d'italique (\itshape retiré) ---
+    {\Large
+    \textbf{Auteurs :} \\ 
+    Noé Florence, Nathan Amoussou, Louis Malmassary \par
     }
+    
     \vspace{1cm}
 
-        {\large \textbf{Professeur:} \\  Gerad Rocher\par}
+    {\large \textbf{Professeur :} \\  Gerald Rocher\par}
+    
+    \vspace{1.5cm}
+
+    % --- Ajout : Section Lien GitHub ---
+    % Nécessite \usepackage{hyperref} ou \usepackage{url} dans le préambule
+    {\large \textbf{Dépôt GitHub :} \\ 
+    \url{https://github.com/NathanAmoussou/3d_edge_object_detection} \par}
+    
     \vfill
 
-    {\large \textbf{ } \\
- \par}
-    \vfill
-    {\large \textbf{} \\ \par}
-   \vfill
-    
-    % Facultatif : Superviseur
-    \vspace{0.8cm}
+    % Ajout de la date (facultatif, sinon enlever la ligne suivante)
+    {\large \today \par} 
     
 \end{titlepage}
 
@@ -99,14 +106,9 @@
 \maketitle
 
 \tableofcontents
-
-% \section{Context of the project and objectives}
+\newpage
 
 \section{Introduction}
-
-% Rappel du projet et de son intérêt, optimiser modèles IA parce que puissance de calcul limitée sur de l'embarquée et parfois pas de possibilitée pratique d'utiliser un modèle dans le cloud, et aussi parce que la pratique d'optimiser des modèles via différents levier, sur le hardware et directement le modèle, est répandue et accessible aujourd'hui
-
-% Dans ce projet décrit dans ce rapport on va prendre un modèle d'ia et une sélection de hardware (décrit dans section ...), appliquer différentes couches et combinaisons d'optimisations (décrit dans scetion ...), et évaluer les performances et différentes métriques de consommation et performance sur différents hardwares en s'assurant que ces comparaisons sont le plus fair possible (décrit dans ...) et conclure sur la ou les combinaisons d'optim les plus intéressantes par hardware.
 
 L’essor de l'informatique embarquée (ville intelligente, robotique, véhicules autonomes, santé connectée, etc.) s’accompagne d’un besoin croissant de déployer des modèles d’intelligence artificielle (IA) au plus proche des capteurs et des actionneurs. % Vérifier terme informatique embarquée
 Ce déplacement du \textit{cloud} vers l’\textit{edge} est motivé à la fois par des contraintes pratiques (connectivité intermittente, coûts de transfert, confidentialité) et par des exigences techniques (faible latence, robustesse en temps réel), tout en restant limité par les ressources disponibles sur l’embarqué (mémoire, puissance de calcul, énergie). % Expliquer ou remplacer edge et cloud
@@ -122,8 +124,6 @@ L’objectif final de ce projet est d’identifier, pour chaque plateforme, les 
 
 \subsection{Architecture à optimiser} % TODO : Modifier le titre/utiliser un \paragraph?
 
-% Comme modèle d'IA à optimiser, on a choisit un modèle de vision/détection, c'est un modèle d'IA, qui reçoit une image en entrée (ou une vidéo sous forme d'une succession continue d'image) et retourne la position d'un ou de plusieurs objets spécifiques détectées dans l'image, objets pour lesquels ce modèle à été entrainé spécifiquement. Le modèle spécifique c'est YOLOv11 d'ultralytic, un modèle publié en telle année, avec telles caractéristiques (taille, cas d'usage, recognition, etc.). On a choisit ce modèle parce que il est représentatif des modèles/cas d'usage utilisées en EDGE/Embarqué/IOT, et aussi parce que pour faire le pont avec nos nécessité pour le porjet d'IOT, on s'intéresse aux modèles de vision.
-
 Comme architecture d'IA à optimiser, nous avons choisi un modèle de vision par ordinateur dédié à la détection d’objets. 
 Ce type de réseau reçoit en entrée une image (ou une séquence d’images pour une vidéo) et produit en sortie un ensemble de prédictions décrivant où se trouvent les objets d’intérêt et de quel type ils sont : typiquement des boîtes englobantes (\textit{bounding boxes}), associées à une classe et à un score de confiance. 
 Dans la suite, l’ensemble de nos optimisations viseront donc à accélérer et/ou alléger cette chaîne d’inférence tout en contrôlant la dégradation éventuelle de la qualité de détection.
@@ -135,23 +135,6 @@ Ce choix est motivé à la fois par le caractère très représentatif de YOLO p
 %TODO : Justifier pourquoi on l'a choisit.
 
 \subsection{Matériel}
-
-% Matériels sur lesquels optimiser puis tester le modèle d'IA divisé en deux caté :
-% 1) Réference, non-edge, non embarqué, pas notre cible principal, à titre indicatif et de comparaison avec edge
-% - un GPU 4070 laptop, 8GB vRAM, 32GB RAM
-% - Un CPU i9 14900 HX 32GB ram
-% 2) Matériel edge pour notre cas d'usage
-% - une Pi4 (avec son CPU, checker en ligne)
-% - un nvidia jetson orin nano 4GB (on s'intéresse au GPU)
-% - une luxonis OAK D Pro (on s'intéresse au VPU myriad accélérateur)
-
-% À la suite du choix de l’architecture IA et afin d’évaluer l’effet des optimisations dans des conditions réalistes, nous testons l’inférence sur un ensemble de plateformes hétérogènes. 
-% Nous distinguons d’abord deux machines de référence---qui ne constituent pas notre cible principale \textit{edge}/embarqué, mais servent de point de comparaison indicatif---: un PC portable équipé d’un GPU NVIDIA RTX 4070 (8 Go de VRAM) et de 32 Go de RAM (nommé \textit{4070} dans la suite de ce document), ainsi qu’un CPU Intel Core i9-14900HX (24 cœurs / 32 \textit{threads}, 32 Go de RAM, nommé ensuite \textit{i9}).
-
-% Pour coller à notre cas d’usage \textit{edge}, nous retenons également trois dispositifs représentatifs de familles d’accélération différentes. 
-% Le Raspberry Pi 4 (nommé ensuite \textit{Pi}) constitue une cible CPU-\textit{only} (Cortex-A72, quatre cœurs/\textit{threads}) où l’on cherche surtout à maîtriser les performances sous fortes contraintes. 
-% Le NVIDIA Jetson Orin Nano 4GB (nommé ensuite \textit{Orin}) apporte un GPU embarqué (architecture Ampere, 512 cœurs CUDA et 16 Tensor Cores) et 4 Go de LPDDR5, ce qui en fait une plateforme adaptée à l’exploration d’optimisations tirant parti du calcul parallèle. 
-% Enfin, la Luxonis OAK-D Pro (nommé ensuite \textit{Oak}) embarque un VPU Movidius Myriad X, typique d’une approche utilisant un accélérateur dédié pour exécuter des modèles de vision efficacement à faible consommation.
 
 À la suite du choix de l’architecture IA et afin d’évaluer l’effet des optimisations dans des conditions réalistes, nous testons l’inférence sur un ensemble de plateformes hétérogènes.
 Notre cible principale étant l’IA \textit{edge}/embarqué, nous décrivons d’abord trois dispositifs représentatifs de familles d’accélération différentes :
@@ -176,10 +159,13 @@ Notre cible principale étant l’IA \textit{edge}/embarqué, nous décrivons d�
     Un VPU (\textit{Vision Processing Unit}) est un accélérateur spécialisé pour la vision, conçu pour exécuter efficacement des traitements d’imagerie et des réseaux de neurones \`a faible consommation, avec un meilleur compromis perf/W qu’un CPU.
     Cette approche favorise l’efficacité énergétique et réduit la charge du CPU hôte, mais impose des contraintes plus fortes de mémoire embarquée et de compatibilité opérateur (modèles à convertir/adapter).
     Le goulot d’étranglement peut provenir du VPU (capacité de calcul/mémoire, support d’opérateurs), mais aussi du \textit{dataflow} hôte $\leftrightarrow$ caméra (USB).
+    Pour les tests avec la oak-d pro qui vont suivre, la caméra sera pilotée par notre ordinateur, via USB.
     % TODO : Vérifier cette dernière phrase.
 \end{itemize}
 
 En complément (hors cible principale \textit{edge}/embarqué), nous utilisons deux machines de référence comme points de comparaison indicatifs : (i) un PC portable \textit{4070} équipé d’un GPU \textbf{NVIDIA GeForce RTX 4070 Laptop} (8~Go de VRAM) et de 32~Go de RAM, et (ii) un PC portable \textit{i9} basé sur un \textbf{Intel Core i9-14900HX} (24 cœurs / 32 \textit{threads}, 32~Go de RAM).
+
+Le tableau 1 synthétise les plateformes décrites ci-dessus.
 
 \begin{table}[H]
     \centering
@@ -239,19 +225,6 @@ En complément (hors cible principale \textit{edge}/embarqué), nous utilisons d
 
 % TODO : Parler du fallback CPU sur INT8
 
-% Décrire bien les pipelines
-
-% Sur le modèle de vision retenue, on a appliqué ces optimisations (parfois séquentiellement parfois parallèlement);
-% - élagage (n, s, m)
-% - quantification (fp32, fp16)
-% - input resolution de l'image dans le modèle
-% On a aussi des optims spéxifiques à chaque hardware
-% - les différents runtimes en fonctino du hard
-% - fusion de couche en fonction du rt
-% - nb de shaves sur oak
-% - optims bins et sparsity sur trt et int8
-%  Ce qui nous fait un total de X variantes par hard/rt
-
 Afin de structurer notre exploration, nous regroupons les optimisations en quatre familles correspondant à un découpage $2\times2$ :
 (i) optimisations à la compilation vs (ii) optimisations au \textit{runtime}, et, dans chaque cas,
 (iii) optimisations agnostiques du matériel vs (iv) optimisations spécifiques à une plateforme.
@@ -300,7 +273,6 @@ Passer en \texttt{FP16} réduit la bande passante mémoire et peut accélérer l
 Concrètement, on pilote ce choix dès l’export Ultralytics via \texttt{half=True} (FP16) ou \texttt{half=False} (FP32), ce qui produit des modèles ONNX dont l’entrée (et les poids) sont en \texttt{float16} ou \texttt{float32} ; lors du benchmark, on détecte ce dtype et on alimente l’inférence avec des tenseurs du même type.
 C’est surtout pertinent sur les plateformes GPU où TensorRT/CUDA peut exploiter des chemins FP16 optimisés (notamment via les Tensor Cores) et où la réduction de bande passante/VRAM aide directement à tenir dans des budgets mémoire serrés (ex.~4~Go sur Orin).
 \end{itemize}
-% Ces trois axes définissent $3\times 5\times 2 = 30$ variantes de base.
 
 \subsubsection{Optimisations spécifiques matériel}
 
@@ -322,7 +294,7 @@ Dans notre \textit{workflow}, on active/désactive ce mode au moment de la const
 Côté matériel, l’accélération est conditionnée à une sparsité structurée 2:4 exploitée par les Tensor Cores ; comme nos modèles YOLO ne sont pas entraînés/prunés pour respecter ce motif, activer la sparsité devrait être en grande partie ignoré (ou n’apporter qu’un gain négligeable) sur l’Orin.
 \end{itemize}
 
-\subsection{Optimisations au \textit{runtime} (agnostiques matériel)}
+\subsection{Optimisations au \textit{runtime} }
 
 \subsubsection{Optimisations agnostiques matériel}
 
@@ -332,16 +304,15 @@ Nous n’avons pas retenu d’optimisations \textit{runtime} agnostiques des pla
 
 Au moment de l’exécution, nous évaluons un réglage de la fusion du graphe via ORT :
 \begin{itemize}
-  \item \textbf{Pi, i9, 4070 --- Fusion de graphe} : \{\texttt{DISABLE\_ALL}, \texttt{ENABLE\_BASIC}, \texttt{ENABLE\_EXTENDED}, \texttt{ENABLE\_ALL}\}.
+  \item \textbf{Pi, i9, 4070 --- Fusion de graphe} : \{\texttt{DISABLE\_ALL}, \texttt{ENABLE\_BASIC}, \texttt{ENABLE\_ALL}\}.
   Juste avant l'exécution d'un modèle, ORT applique un ensemble de passes sans changement sémantique sur le graphe ONNX (simplifications, \textit{constant folding}, élimination de nœuds redondants, fusions d’opérateurs compatibles...). Le but est de réduire le nombre d’opérations exécutées et les mouvements mémoire (moins de kernels/appels, meilleure localité), ce qui devrait diminuer la latence E2E.
-  Le gain est en général plus marqué sur CPU, où réduire les allocations, copies et surcoûts d’exécution améliore directement les performances et la pression mémoire. Sur GPU via ORT, les fusions peuvent aussi aider en réduisant des lancements de kernels et des passages mémoire, mais l’effet peut être moins net si le goulot principal est ailleurs (pré/post-traitement CPU, transferts). Enfin, sur Orin en TensorRT EP, l’impact de ces optimisations ORT est typiquement limité car TensorRT applique déjà ses propres optimisations/fusions lors de la construction de l’engine.
+  Le gain est en général plus marqué sur CPU, où réduire les allocations, copies et surcoûts d’exécution améliore directement les performances et la pression mémoire. Sur GPU via ORT, les fusions peuvent aussi aider en réduisant des lancements de kernels et des passages mémoire, mais l’effet peut être moins net si le goulot principal est ailleurs (pré/post-traitement CPU, transferts). 
 \end{itemize}
 
 \subsection{Récapitulatif}
 
 Le \cref{tab:optimisations_synthese} récapitule l’ensemble des optimisations étudiées, en distinguant celles appliquées à la compilation et au \textit{runtime}, ainsi que leur caractère agnostique ou spécifique à une plateforme.
 
-% Requiert: \usepackage{booktabs} \usepackage{array}
 \begin{table}[ht]
 \centering
 \small
@@ -420,6 +391,7 @@ Pour garder une lecture simple et comparable entre plateformes, nous concentrons
 
 En complément des métriques de performance (E2E et mAP@50), nous instrumentons l’exécution afin d’observer la pression sur le système et d’interpréter les latences mesurées.
 Toutes les mesures sont échantillonnées périodiquement pendant le \textit{benchmark} (\textit{thread} de \textit{monitoring}, typiquement toutes les 500 à \SI{2000}{ms}) puis résumées (moyenne, p95). 
+
 \begin{itemize}
     \item \textbf{Utilisation CPU / GPU (et limites côté VPU)} : On mesure la charge CPU (Pi, i9) au niveau du processus de \textit{benchmark} via \texttt{psutil} (\texttt{Process.cpu\_percent}), avec une version normalisée par le nombre de cœurs logiques lorsque disponible. 
     Côté 4070, nous lisons l’utilisation GPU (\%) et la VRAM (MB) via \texttt{nvidia-smi} (\texttt{--query-gpu=utilization.gpu,memory.used}).
@@ -436,12 +408,12 @@ Toutes les mesures sont échantillonnées périodiquement pendant le \textit{ben
     Dans le code, le module de \textit{monitoring} se connecte à la prise via la bibliothèque \texttt{tapo} (\texttt{ApiClient}) et interroge \texttt{get\_current\_power()} à intervalle fixe (par défaut toutes les \SI{2}{s}), pour ne pas surcharger l'API Tapo qui autorise difficilement une fréquence plus élevée, avec gestion d’échecs temporaires et désactivation si les lectures échouent.
     Lorsque nécessaire, nous convertissons la valeur renvoyée en watts via un facteur d’échelle configurable (\texttt{--tapo-power-scale}). 
     Sources d’incertitude : (i) mesure au niveau prise \(\Rightarrow\) inclut les pertes du bloc d’alimentation (rendement) et d’éventuels périphériques, (ii) résolution temporelle limitée (\textit{polling} \SI{2}{s}) \(\Rightarrow\) pics courts potentiellement lissés, (iii) latence réseau/Wi-Fi et appels asynchrones \(\Rightarrow\) valeurs manquantes possibles, (iv) sensibilité à l’état du système (processus de fond), ce qui motive une mesure \textit{idle} préalable dans le protocole. 
+\end{itemize}
 
 \subsection{Résumé}
 
 Le \cref{tab:mesures_incertitudes} synthétise les différentes métriques instrumentées durant les \textit{benchmarks}, en précisant pour chacune la méthode de mesure utilisée (outil ou bibliothèque) ainsi que les principales limites et sources d’incertitude identifiées, afin de faciliter l’interprétation des résultats et la comparaison entre plateformes.
 
-% Requiert: \usepackage{tabularx} \usepackage{booktabs} \usepackage{array}
 \begin{table}[ht]
 \centering
 \small
@@ -481,50 +453,8 @@ Mesure « au mur » (inclut pertes alim + périphériques), résolution temporel
 \label{tab:mesures_incertitudes}
 \end{table}
 
-
-
-\textbf{}
-
-  % \item CPU (\%) : charge du processus lors du benchmark.
-  % \item Mémoire RAM (MB) :
-  % \begin{itemize}
-  %   \item RSS du processus de benchmark (empreinte mémoire du programme),
-  %   \item RAM système utilisée (pression mémoire globale), utile sur les plateformes à mémoire partagée (ex. Jetson).
-  % \end{itemize}
-  % \item Accélérateurs NVIDIA (RTX 4070 / Jetson Orin) :
-  % \begin{itemize}
-  %   \item Utilisation GPU (\%) et VRAM (MB) via \texttt{nvidia-smi} sur PC,
-  %   \item GR3D\_FREQ (\%) et EMC\_FREQ (\%) via \texttt{tegrastats} sur Jetson, pour approcher la charge GPU et la pression mémoire/bande passante.
-  % \end{itemize}
-  % \item OAK-D (VPU Myriad) : récupération d’indicateurs internes côté caméra (charge CPU embarquée \textit{Leon CSS}, mémoire \textit{DDR/CMX}) et, lorsque disponible, un temps d’inférence VPU estimé à partir des traces (\textit{profiling}).
-  % \item Consommation électrique (W) et énergie par inférence (J) : lorsque la mesure est disponible (p.\,ex. via un wattmètre externe), nous reportons la puissance instantanée et l’énergie moyenne par inférence, afin d’évaluer l’efficacité énergétique (métrique clé en embarqué).
-\end{itemize}
-
-% On a des métriques sur les performances du modèles, et des métriques sur l'utilisation du hardware.
-% Pour le modèle, on mesure :
-% - mAP
-% - Precision/recall/F1
-% - E2E runtime
-% - device time
-% - preprocess
-% - inference
-% - postprocess
-% - p50/p...
-% - FPS
-% On a aussi des métriques côtés hardwares :
-% - Utilisation de la puce
-% - Utilisation de la RAM
-% - température
-% - conso élec
-
 \section{Protocole de benchmarking} \label{subsec:protocole_de_benchmarking}
 \subsection{Description}
-
-% Après avoir défini l’espace des optimisations et des métriques relevées, l’enjeu devient de mesurer leurs effets de façon comparable d’une plateforme à l’autre. Nous appliquons un protocole identique sur chaque matériel, fondé sur trois précautions : (i) une mesure à vide sur quelques secondes, sans exécuter d’inférence, afin d’estimer la consommation et l’utilisation des ressources dues uniquement au système et aux processus en arrière-plan ; (ii) une phase de \textit{warmup} (inférences initiales non comptabilisées) pour stabiliser le pipeline d’exécution du modèle de vision ; (iii) la répétition de chaque expérience trois fois, afin de lisser l’aléatoire, puis l’agrégation des résultats (moyenne) lors de l’analyse.
-
-% Une fois ces conditions réunies, chaque couple (\textit{hardware}, \textit{runtime}) exécute les mêmes tests d’inférence sur un jeu de données commun. Nous utilisons \texttt{coco128}, qui contient 128 images, suffisamment petit pour rester exécutable rapidement sur l’ensemble des plateformes, tout en étant assez grand pour obtenir des métriques exploitables. Pour chaque variante, l’inférence est effectuée sur l’ensemble des images et les métriques sont ensuite calculées et enregistrées au format CSV.
-
-% Enfin, la consommation électrique instantanée est mesurée de manière externe à l’aide de la prise connectée Tapo. Concrètement, la prise est insérée entre la source secteur et l’alimentation du matériel testé, ce qui permet de relever une puissance en watts au niveau système.
 
 Après avoir défini l’espace des optimisations et des métriques relevées, l’enjeu devient de mesurer leurs effets de façon comparable d’une plateforme à l’autre. Nous appliquons un protocole identique sur chaque matériel, fondé sur trois précautions visant à limiter les principales sources d’incertitude identifiées précédemment :
 
@@ -547,263 +477,361 @@ Après avoir défini l’espace des optimisations et des métriques relevées, l
 
 Une fois ces conditions réunies, chaque couple (\textit{hardware}, \textit{runtime}) exécute les mêmes tests d’inférence sur un jeu de données commun. Nous utilisons \texttt{coco128}, qui contient 128 images, suffisamment petit pour rester exécutable rapidement sur l’ensemble des plateformes, tout en étant assez grand pour obtenir des métriques exploitables. Pour chaque variante, l’inférence est effectuée sur l’ensemble des images et les métriques sont ensuite calculées et enregistrées au format CSV.
 
-% \subsection{Précautions}
+\section{Résultats et analyse} \label{sec:resultats}
 
-% \begin{enumerate}
-% \item \textbf{Mesure à vide} : Une mesure préliminaire de quelques secondes est effectuée sans exécuter d’inférence. Cela permet d’isoler la consommation et l'utilisation des ressources dues uniquement au système d'exploitation et aux processus en arrière-plan.
-% \item \textbf{Phase de Warmup}: Une série d'inférences initiales est exécutée mais non comptabilisée. Cette étape sert à stabiliser le pipeline d’exécution (chargement des librairies, caches CPU/GPU) avant le début des mesures.
-% \item \textbf{Répétition et lissage}: Chaque exécution est répétée trois fois intégralement. Les résultats présentés dans l'analyse correspondent à la moyenne agrégée de ces exécutions, ce qui permet de lisser les variations aléatoires (jitter)
-% \end{enumerate}
+Cette section analyse les résultats obtenus avec le protocole de \cref{subsec:protocole_de_benchmarking}, en lien direct avec les leviers d’optimisation introduits en \cref{sec:benchmarking} et les contraintes matérielles décrites en \cref{sec:contexte}. 
 
-% \subsection{Limites méthodologiques}
+La \cref{fig:lat_reso_barchart} est un histogramme comparant la latence E2E p95 (ms) en fonction de la résolution d’entrée (px), pour trois plateformes \textit{edge} (Orin, Oak, Pi). L’axe des abscisses correspond aux résolutions testées (256, 320, 416, 512, 640) et l’axe des ordonnées à la latence p95.
 
-% Malgré les précautions prises lors de la réalisation de ce protocole, nous avons quand identifié des incertitudes liés à la chaîne de mesure. Cependant l'application de même protocole sur tout les hardwares ainsi que des précautions citées en section 5.2 (notamment la redondance des prises de valeur et du warmup) garantit la validités des comparaison relatives et la viabilité de nos résultat.
-
-
-% \renewcommand{\arraystretch}{1.4} % Aère les lignes
-
-% \begin{xltabular}{\textwidth}{@{} p{2.5cm} p{3cm} >{\RaggedRight\arraybackslash}X >{\RaggedRight\arraybackslash}X @{}}
-
-%     \caption{Tableau des Incertitudes et Limites du Protocole de Mesure} \\
-%     \toprule
-%     \textbf{Métrique Mesurée} & \textbf{Outil / Méthode} & \textbf{Précision / Marge d'erreur} & \textbf{Sources d'Incertitude et Biais} \\
-%     \midrule
-%     \endfirsthead
-
-%     \caption[]{Tableau des Incertitudes (suite)} \\
-%     \toprule
-%     \textbf{Métrique} & \textbf{Outil} & \textbf{Précision} & \textbf{Sources et Biais} \\
-%     \midrule
-%     \endhead
-
-%     \midrule
-%     \multicolumn{4}{r}{\textit{Suite page suivante...}} \\
-%     \endfoot
-
-%     \bottomrule
-%     \endlastfoot
-
-
-%     \textbf{Conso. Électrique (W)} & 
-%     Prise connectée (Tapo) sur secteur. & 
-%     $\pm$ 5\% à $\pm$ 10\% \newline (Pour $P > 10$W) & 
-%     \textbf{Rafraîchissement lent} ($\sim$1Hz) : La prise peut manquer des pics brefs. \newline
-%     \textbf{Mesure globale} : Inclut les pertes de l'alim (AC/DC) et le système complet. \\
-%     \midrule
-    
-%     \textbf{Puissance GPU/SoC} & 
-%     Sondes logicielles (nvidia-smi, tegrastats). & 
-%     $\pm$ 5\% \newline (Doc NVIDIA) & 
-%     \textbf{Lissage temporel} : Moyenne sur un intervalle (ex: 200ms), masquant les micro-pics. \newline
-%     \textbf{Pertes non comptées} : Ignore parfois la carte porteuse (USB, Ethernet) sur Jetson. \\
-%     \midrule
-    
-%     \textbf{Latence (Temps)} & 
-%     Chronométrage Python (perf\_counter). & 
-%     $< 0.1$ ms \newline (Négligeable) & 
-%     \textbf{Jitter (OS)} : Incertitude due à l'ordonnanceur de l'OS (interruptions). \newline
-%     \textbf{Overhead} : Coût du code de mesure négligeable face à une inférence de 50ms. \\
-%     \midrule
-    
-%     \textbf{Mémoire (RAM / VRAM)} & 
-%     RSS (Resident Set Size) \& Système. & 
-%     Exact \newline (à l'octet près) & 
-%     \textbf{Biais d'interprétation} : Mesure la mémoire "réservée" (allouée), pas forcément celle activement utilisée (caching des frameworks). \\
-%     \midrule
-    
-%     \textbf{Qualité (mAP)} & 
-%     Dataset COCO128 \newline (Sous-ensemble). & 
-%     Biais d'échantillonnage & 
-%     \textbf{Taille du jeu de test} : 128 images est un échantillon faible. La mAP réelle sur COCO val2017 pourrait varier de $\pm$ 1-2\%. Ce jeu favorise la rapidité. \\
-
-\end{xltabular}
-
-
-
-
-
-
-
-
-
-
-% Pour benchmarker sur un hard donnée (même procédure pour tous les hards), on applique trois mesures to ensure fairness 1) mesure des métriques hardwares à vide pendant quelques secondes, sans faire tourner d'inférence, pour mesurer la consommation "de base" de l'OS et app en tâches de fond, 2) avant de lancer la vraie inférence, on fait une phase de préchauffage où vont va faire quelques run pour du beurre pour stabiliser le pipeline/modèle (expliquer un peu plus en détail ça), 3) on va répéter chaque expérience trois fois, et on prendra la moyenne des résultats.
-
-% Ensuite pour chaque hardware, on lance le test du modèle sur le hadware
-% On bench avec coco128, petit, rapide, mais une centaine d'image quand même avoir des résultats exploitables et on fait les mesures en logguant les résultats dans un CSV. On a utilisé une prise Tapo pour la conso électrique, on en parlera avant, mais là juste dire que la prise on la branche entre la source de courrant et cable d'alim du hardware, enfin on branche l'allim du hard sur la prise tapo sur le courrant.
-
-% Parles des risques et incertitudes de mesures
-
-\section{Résultats} \label{sec:resultats}
-
-Nous analysons maintenant les résultats obtenus. Nous distinguons deux cas d’usage : (i) un scénario confortable (4070/i9) où l’objectif est de maximiser la qualité (mAP@50) tout en minimisant la latence (E2E p95), et (ii) un scénario plus \textit{edge} (Pi/Oak) où l’on cherche à minimiser la latence tout en minimisant la puissance électrique moyenne.
-
-Pour la 4070 et le i9, nous représentons le compromis mAP@50 (à maximiser) vs E2E p95 (à minimiser) via un front de Pareto. Un point appartient au front s’il n’est dominé par aucun autre : autrement dit, il n’existe pas de configuration simultanément plus précise (mAP@50 plus élevé) et plus rapide (E2E p95 plus faible). Les \cref{fig:pareto_pc} ne montrent donc que les configurations meilleures candidates pour ce cas d’usage (12 sur 90 pour le 4070, et 16 sur 90 pour le i9).
+On observe une augmentation nette de la latence avec la résolution sur toutes les plateformes. L’Orin reste dans un régime de latence faible et croît modérément, tandis que Pi et Oak voient leur latence augmenter fortement, atteignant des ordres de grandeur similaires à haute résolution (à 640 px, Oak $\approx 636$ ms et Pi $\approx 638$ ms). Ce résultat confirme l’hypothèse que la résolution agit comme levier principal sur les cibles contraintes, car elle augmente simultanément la charge de calcul et la pression mémoire via la taille des activations.
 
 \begin{figure}[H]
-\centering
-\begin{minipage}{0.49\linewidth}
-  \centering
-  \includegraphics[width=\linewidth]{pareto_4070.png}
-  \caption*{(a) 4070}
-\end{minipage}\hfill
-\begin{minipage}{0.49\linewidth}
-  \centering
-  \includegraphics[width=\linewidth]{pareto_cpu.png}
-  \caption*{(b) i9}
-\end{minipage}
-\caption{Fronts de Pareto pour représentant la mAP@50 à maximiser, et l'E2E p95 à minimiser. Les numéros renvoient aux configurations listées dans les \cref{tab:pareto_4070,tab:pareto_cpu}.}
-\label{fig:pareto_pc}
+    \centering
+    \includegraphics[width=0.8\linewidth]{fig1_resolution_e2e.png}
+    \caption{Latence en fonction de la résolution d'entrée, par plateformes \textit{edges}}
+    \label{fig:lat_reso_barchart}
 \end{figure}
 
-\begin{table}[h]
+La \cref{fig:lat_quantif_barchart} regroupe deux histogrammes : (i) plateformes \textit{edge} et (ii) plateformes 4070 et i9. L’axe des abscisses correspond à la plateforme, l’axe des ordonnées à la puissance moyenne (W), et chaque paire de barres compare FP16 à FP32.
+
+Sur Orin et 4070, FP16 réduit fortement la puissance moyenne, ce qui est cohérent avec une exécution accélérée exploitant efficacement la réduction de précision. À l’inverse, sur i9 l’effet est quasi nul, et sur Pi l’effet est plus modéré : cela met en évidence une tendance négative importante, à savoir que FP16 n’est pas un levier énergétique déterminant en exécution CPU-only.
+
+\begin{table}[H]
 \centering
-\footnotesize
-\setlength{\tabcolsep}{3.5pt}
-\begin{tabular}{r l r r r r r r r}
-\hline
-\textbf{ID} & \textbf{Label} & \textbf{mAP@50} & \textbf{p95 (ms)} & \textbf{MB} & \textbf{W} & \textbf{RSS} & \textbf{RAM sys} & \textbf{VRAM} \\
-\hline
-1  & s 256 fp32 ORT ALL      & 0.5942 & 4.6367  & 36.12 & 117.67 & 1866.75 & 11062.20 & 358.33 \\
-2  & s 256 fp16 ORT ALL      & 0.5953 & 5.2967  & 18.09 & 102.33 & 1866.75 & 10991.55 & 283.00 \\
-3  & m 256 fp16 ORT ALL      & 0.6770 & 5.6300  & 38.42 & 114.00 & 1856.30 & 10683.69 & 356.33 \\
-4  & m 256 fp32 ORT DISABLE  & 0.6785 & 5.8367  & 76.75 & 150.33 & 1845.47 & 10740.47 & 483.00 \\
-5  & m 256 fp16 ORT BASIC    & 0.6793 & 5.8633  & 38.42 & 118.33 & 1856.31 & 10691.94 & 357.67 \\
-6  & m 320 fp32 ORT ALL      & 0.7034 & 6.8000  & 76.77 & 109.33 & 1871.49 & 10751.31 & 484.33 \\
-7  & m 416 fp32 ORT ALL      & 0.7452 & 8.9733  & 76.79 & 134.67 & 1843.27 & 10674.11 & 486.33 \\
-8  & m 416 fp16 ORT ALL      & 0.7487 & 10.0033 & 38.44 & 122.67 & 1853.58 & 10727.44 & 356.33 \\
-9  & m 512 fp32 ORT ALL      & 0.7783 & 11.5300 & 76.83 & 139.00 & 1838.39 & 10605.55 & 741.67 \\
-10 & m 512 fp16 ORT ALL      & 0.7788 & 12.6167 & 38.46 & 127.33 & 1842.44 & 10652.76 & 483.67 \\
-11 & m 640 fp32 ORT ALL      & 0.7800 & 16.1633 & 76.89 & 121.33 & 1481.47 & 10292.72 & 734.33 \\
-12 & m 640 fp16 ORT ALL      & 0.7809 & 17.0867 & 38.48 & 121.00 & 1813.53 & 10529.27 & 483.00 \\
-\hline
+\small
+\begin{tabular}{lcc}
+\toprule
+Plateforme & Variation de puissance (FP16 vs FP32) & Observation \\
+\midrule
+Orin & -33\% & baisse marquée \\
+Pi & -11\% & baisse modérée \\
+4070 & -29\% & baisse marquée \\
+i9 & -1\% & effet négligeable \\
+\bottomrule
 \end{tabular}
-\caption{Configurations non dominées (front de Pareto) sur RTX 4070 Laptop pour le cas d’usage \#1. RSS, RAM sys et VRAM sont en MB ; la puissance est en W.}
-\label{tab:pareto_4070}
+\caption{Effet de FP16 sur la puissance moyenne (valeurs indiquées sur \cref{fig:lat_quantif_barchart}).}
+\label{tab:fp16_power_values}
 \end{table}
 
-\begin{table}[h]
-\centering
-\footnotesize
-\setlength{\tabcolsep}{3.5pt}
-\begin{tabular}{r l r r r r r r}
-\hline
-\textbf{ID} & \textbf{Label} & \textbf{mAP@50} & \textbf{p95 (ms)} & \textbf{MB} & \textbf{W} & \textbf{RSS} & \textbf{RAM sys} \\
-\hline
-1  & n 256 fp32 ORT ALL   & 0.4589 & 12.2367  & 10.07 & 97.33  & 866.00  & 12459.79 \\
-2  & n 256 fp16 ORT ALL   & 0.4590 & 13.1567  & 5.07  & 96.67  & 866.00  & 12397.68 \\
-3  & n 320 fp16 ORT ALL   & 0.5154 & 15.8967  & 5.08  & 97.67  & 866.26  & 12490.68 \\
-4  & s 256 fp32 ORT ALL   & 0.5943 & 17.1333  & 36.12 & 98.33  & 884.57  & 11820.61 \\
-5  & s 320 fp32 ORT ALL   & 0.6486 & 21.5167  & 36.13 & 99.00  & 888.61  & 11749.86 \\
-6  & s 320 fp16 ORT ALL   & 0.6499 & 24.0067  & 18.10 & 98.00  & 891.05  & 11827.09 \\
-7  & m 256 fp32 ORT ALL   & 0.6783 & 29.3333  & 76.75 & 98.33  & 981.24  & 11451.16 \\
-8  & s 416 fp32 ORT ALL   & 0.6911 & 33.3133  & 36.16 & 99.33  & 925.98  & 11672.47 \\
-9  & m 320 fp32 ORT ALL   & 0.7034 & 39.6133  & 76.77 & 98.56  & 996.60  & 11177.24 \\
-10 & s 512 fp32 ORT ALL   & 0.7307 & 42.3200  & 36.19 & 99.00  & 937.88  & 11445.71 \\
-11 & s 512 fp16 ORT ALL   & 0.7309 & 47.3567  & 18.13 & 98.22  & 944.51  & 11634.59 \\
-12 & m 416 fp32 ORT ALL   & 0.7452 & 61.3667  & 76.79 & 98.83  & 1061.00 & 11123.77 \\
-13 & m 512 fp32 ORT ALL   & 0.7782 & 84.3167  & 76.83 & 99.17  & 1091.08 & 11063.42 \\
-14 & m 640 fp32 ORT ALL   & 0.7802 & 122.7000 & 76.89 & 125.23 & 1210.44 & 11238.51 \\
-15 & m 640 fp16 ORT ALL   & 0.7805 & 132.0133 & 38.48 & 99.67  & 1267.36 & 10793.08 \\
-16 & m 640 fp16 ORT BASIC & 0.7806 & 207.3733 & 38.48 & 99.03  & 1207.62 & 10769.02 \\
-\hline
-\end{tabular}
-\caption{Configurations non dominées (front de Pareto) sur CPU i9 pour le cas d’usage \#1. La VRAM n’est pas applicable en exécution CPU.}
-\label{tab:pareto_cpu}
-\end{table}
-
-Sur GPU, un fait marquant est la forte représentation de la variante \texttt{m} (10/12) et du mode \texttt{ORT ALL} (10/12), suggérant que, lorsque le budget de calcul est suffisant, les optimisations de graphe ORT au niveau maximal contribuent fortement à obtenir des points à la fois rapides et précis. Sur CPU, le front couvre davantage de tailles (\texttt{n/s/m}) — ce qui reflète un compromis plus sensible entre complexité et latence — mais \texttt{ORT ALL} domine également (15/16), avec un unique point \texttt{ORT BASIC} nettement plus lent. Les tableaux permettent aussi de constater que (i) \texttt{FP16} réduit fortement la taille du modèle (et parfois la mémoire), mais (ii) n’apporte pas systématiquement un gain de latence sur ces configurations, ce qui rejoint l’observation globale discutée plus loin.
-
-Dans un scénario plus \textit{edge}, où l’on suppose des ressources limitées, nous considérons le compromis puissance électrique moyenne (à minimiser) vs E2E p95 (à minimiser). Les fronts obtenus sont beaucoup plus restreints : 6 configurations pour la Pi et un unique point pour l’Oak dans cet extrait, ce qui reflète des contraintes fortes (notamment la nécessité de rester sur des modèles très légers et des résolutions faibles). Dans les deux cas, le front est constitué uniquement de variantes \texttt{n} ; sur Pi on observe essentiellement \texttt{ORT ALL} (et quelques points \texttt{ORT BASIC}), et sur OAK le point retenu correspond à \texttt{S6} (6 SHAVEs).
-
-\begin{figure}[h]
-\centering
-\begin{minipage}{0.49\linewidth}
-  \centering
-  \includegraphics[width=\linewidth]{pareto_pi.png}
-  \caption*{(a) Raspberry Pi 4}
-\end{minipage}\hfill
-\begin{minipage}{0.49\linewidth}
-  \centering
-  \includegraphics[width=\linewidth]{pareto_oak.png}
-  \caption*{(b) OAK-D Pro (MyriadX)}
-\end{minipage}
-\caption{Fronts de Pareto pour le cas d’usage \#2 (puissance vs latence). Les numéros renvoient aux \cref{tab:pareto_pi,tab:pareto_oak}.}
-\label{fig:pareto_edge}
+\begin{figure}[H]
+    \centering
+    % --- Première sous-figure (Gauche) ---
+    \begin{subfigure}{0.4\textwidth}
+        \centering
+        % On met width=\linewidth pour que l'image prenne toute la largeur de la sous-figure
+        \includegraphics[width=\linewidth]{fig3a_quant_power_edge.png}
+        \caption{Plateformes \textit{edge}}
+        \label{fig:edge}
+    \end{subfigure}
+    \hfill % Ajoute un espace flexible entre les deux images
+    % --- Deuxième sous-figure (Droite) ---
+    \begin{subfigure}{0.4\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{fig3b_quant_power_desktop.png}
+        \caption{Plateformes 4070 et i9}
+        \label{fig:desktop}
+    \end{subfigure}
+    
+    % --- Légende globale et Label ---
+    \caption{Puissance électrique en fonction du niveau de quantification, par plateformes}
+    \label{fig:lat_quantif_barchart}
 \end{figure}
 
-\begin{table}[h]
+La \cref{fig:lat_fus_barchart} est un histogramme comparant la latence E2E p95 (ms) en fonction du niveau de fusion ORT (\texttt{DISABLE\_ALL}, \texttt{ENABLE\_BASIC}, \texttt{ENABLE\_ALL}) sur 4070, Pi et i9. L’axe des abscisses est la plateforme, l’axe des ordonnées la latence, et les couleurs correspondent aux niveaux de fusion.
+
+On observe que \texttt{ENABLE\_ALL} a un impact très fort sur i9, un impact faible sur Pi, et un impact négligeable sur 4070. Cela confirme l’hypothèse que les fusions ORT sont surtout pertinentes quand l’exécution est dominée par le CPU, alors qu’en régime accéléré (GPU) la latence est davantage contrainte par d’autres éléments (orchestration, transferts, kernels).
+
+\begin{table}[H]
 \centering
-\footnotesize
-\setlength{\tabcolsep}{3.5pt}
-\begin{tabular}{r l r r r r r r}
-\hline
-\textbf{ID} & \textbf{Label} & \textbf{mAP@50} & \textbf{p95 (ms)} & \textbf{MB} & \textbf{W} & \textbf{RSS} & \textbf{RAM sys} \\
-\hline
-1 & n 256 fp32 ORT ALL   & 0.4589 & 119.9933 & 10.07 & 5.8167 & 375.43 & 559.2933 \\
-2 & n 256 fp16 ORT ALL   & 0.4590 & 122.5867 & 5.07  & 5.7500 & 375.43 & 556.0800 \\
-3 & n 256 fp16 ORT BASIC & 0.4590 & 139.3500 & 5.07  & 5.7433 & 375.43 & 556.1000 \\
-4 & n 416 fp16 ORT ALL   & 0.5801 & 288.0167 & 5.09  & 5.5900 & 375.42 & 555.6167 \\
-5 & n 512 fp16 ORT ALL   & 0.6376 & 425.4933 & 5.11  & 5.1700 & 396.79 & 577.1433 \\
-6 & n 512 fp16 ORT BASIC & 0.6376 & 440.4000 & 5.11  & 5.1633 & 404.66 & 585.7467 \\
-\hline
+\small
+\begin{tabular}{lcc}
+\toprule
+Plateforme & Gain relatif avec \texttt{ENABLE\_ALL} & Lecture \\
+\midrule
+i9 & -31\% & réduction importante de la latence \\
+Pi & -4\% & effet limité \\
+4070 & $\approx 0$\% & effet négligeable \\
+\bottomrule
 \end{tabular}
-\caption{Configurations non dominées (front de Pareto) sur Raspberry Pi 4 pour le cas d’usage \#2.}
-\label{tab:pareto_pi}
+\caption{Impact du niveau de fusion ORT sur la latence (valeurs indiquées sur \cref{fig:lat_fus_barchart}).}
+\label{tab:fusion_ort_values}
 \end{table}
 
-\begin{table}[h]
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.8\linewidth]{fig4_fusion_ort.png}
+    \caption{Latence en fonction du niveau de fusion, par plateformes}
+    \label{fig:lat_fus_barchart}
+\end{figure}
+
+La \cref{fig:lat_puiss_elag_reso_shaves} est un nuage de points (échelles log) reliant puissance (W, axe $x$) et latence E2E p95 (ms, axe $y$) sur Oak. La figure encode la résolution (forme), la taille du modèle (taille du marqueur) et le nombre de SHAVEs (couleur). La tendance principale est structurée par la résolution et la taille du modèle : à résolution plus élevée et modèle plus grand, la latence augmente fortement. Le nombre de SHAVEs agit comme réglage plus fin : l’effet n’est pas strictement monotone, et reste secondaire face à la résolution et au niveau d’élagage.
+
+% \begin{table}[H]
+% \centering
+% \small
+% \begin{tabular}{p{0.26\linewidth}p{0.32\linewidth}p{0.34\linewidth}}
+% \toprule
+% Option Orin & Effet attendu & Observation sur nos mesures \textit{runtime} \\
+% \midrule
+% \textit{Heuristic} (H0/H1) & accélérer la phase de build & pas de gain systématique sur E2E/power \\
+% \textit{Sparsity} (SP0/SP1) & gain si sparsité structurée compatible & pas de gain net observé sur E2E/power \\
+% \bottomrule
+% \end{tabular}
+% \caption{Tendances négatives sur Orin : options TensorRT sans effet \textit{runtime} robuste dans nos tests.}
+% \label{tab:orin_negative_specific}
+% \end{table}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.8\linewidth]{fig_oak_shaves.png}
+    \caption{Compromis latence/puissance électrique en fonction de du niveau d'élagage et de résolution, et du nombre de SHAVEs, sur Oak}
+    \label{fig:lat_puiss_elag_reso_shaves}
+\end{figure}
+
+Pour Orin, la \cref{fig:lat_puisse_lag_reso_quantif} confirme que les points se structurent d’abord par résolution et taille de modèle, et que FP16 tend à améliorer le compromis énergétique. En revanche, nos options spécifiques TensorRT (mode \textit{heuristic} et \textit{sparsity}, \cref{tab:merged_metrics}) ne montrent pas de tendance robuste sur les métriques \textit{runtime} (latence E2E p95 et puissance moyenne) au-delà de la variabilité : c’est une tendance négative importante à rapporter, cohérente avec le fait que (i) \textit{heuristic} vise principalement le temps de construction de l’engine et (ii) \textit{sparsity} requiert une sparsité structurée absente de nos variantes.
+
+\begin{table}[H]
 \centering
-\footnotesize
-\setlength{\tabcolsep}{3.5pt}
-\begin{tabular}{r l r r r r r r}
-\hline
-\textbf{ID} & \textbf{Label} & \textbf{mAP@50} & \textbf{p95 (ms)} & \textbf{MB} & \textbf{W} & \textbf{RSS} & \textbf{RAM sys} \\
-\hline
-1 & n 256 fp16 OAK S6 & 0.4567 & 72.6167 & 5.54 & 5.8667 & 386.2767 & 559.6400 \\
-\hline
+\small
+\begin{tabular}{lcccc}
+\toprule
+& \multicolumn{2}{c}{\textit{Heuristic}} & \multicolumn{2}{c}{\textit{Sparsity}} \\
+\cmidrule(lr){2-3} \cmidrule(lr){4-5}
+Métrique & H0 & H1 & SP0 & SP1 \\
+\midrule
+E2E p95 (ms)   & \textbf{47.08} & 47.42          & 47.31          & \textbf{47.19} \\
+mAP@50 (\%)    & \textbf{66.32} & 66.3           & \textbf{66.31} & 66.3           \\
+GPU util (\%)  & \textbf{45.88} & 46.23          & 46.67          & \textbf{45.44} \\
+Puissance moyenne (W) & 1.87           & \textbf{1.84}  & 1.87           & \textbf{1.84}  \\
+\bottomrule
 \end{tabular}
-\caption{Configuration non dominée sur OAK-D Pro pour le cas d’usage \#2.}
-\label{tab:pareto_oak}
+\caption{Comparaison des mesures en fonction des niveaux d'\textit{heuristic} et de \textit{sparsity}}
+\label{tab:merged_metrics}
 \end{table}
 
-Pour isoler l’effet des principaux leviers, nous analysons ensuite les métriques moyennes regroupées par facteur. Les \cref{fig:map_factors} confirment que la qualité (mAP@50) est principalement corrélée (i) à la taille du modèle (\texttt{m} $>$ \texttt{s} $>$ \texttt{n}) et (ii) à la résolution d’entrée (plus l’image est grande, plus la mAP@50 augmente), avec des tendances globalement cohérentes d’un matériel à l’autre. À l’inverse, dans nos mesures, la quantification FP16/FP32, le nombre de SHAVEs (OAK) et le niveau de fusion ORT n’ont pas montré d’impact significatif sur la mAP@50 (à l’échelle des variations observées).
-
-\begin{figure}[h]
-\centering
-\begin{minipage}{0.49\linewidth}
-  \centering
-  \includegraphics[width=\linewidth]{map_per_scale.png}
-  \caption*{(a) mAP@50 vs taille \texttt{n/s/m}}
-\end{minipage}\hfill
-\begin{minipage}{0.49\linewidth}
-  \centering
-  \includegraphics[width=\linewidth]{map_per_size.png}
-  \caption*{(b) mAP@50 vs résolution}
-\end{minipage}
-\caption{Effet des principaux leviers de compilation sur la qualité (mAP@50).}
-\label{fig:map_factors}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.8\linewidth]{fig_orin_detailed.png}
+    \caption{Compromis latence/puissance en fonction du niveau d'élagage, de résolution et de quantification, sur Orin}
+    \label{fig:lat_puisse_lag_reso_quantif}
 \end{figure}
 
-Du côté des performances temporelles, les \cref{fig:e2e_factors} montrent une corrélation forte entre résolution et latence E2E : plus l’entrée est grande, plus l’inférence est lente, ce qui est attendu (plus de pixels à traiter). On notera que les barres Pi et OAK peuvent sembler proches à certains endroits car les valeurs sont agrégées : or la Pi n’exécute ici que des variantes \texttt{n}, tandis que l’OAK inclut aussi des variantes \texttt{s/m}, ce qui peut biaiser la comparaison directe si l’on ne contrôle pas la taille de modèle. Enfin, concernant les optimisations ORT, nous observons une légère dominance du mode \texttt{ALL} (et parfois \texttt{DISABLE}) par rapport à \texttt{BASIC}, ce dernier apparaissant en moyenne comme le plus lent sur ces regroupements.
 
-\begin{figure}[h]
-\centering
-\begin{minipage}{0.49\linewidth}
-  \centering
-  \includegraphics[width=\linewidth]{e2e_size.png}
-  \caption*{(a) E2E p95 vs résolution}
-\end{minipage}\hfill
-\begin{minipage}{0.49\linewidth}
-  \centering
-  \includegraphics[width=\linewidth]{e2e_fusion.png}
-  \caption*{(b) E2E p95 vs fusion ORT}
-\end{minipage}
-\caption{Effet des facteurs principaux sur la latence E2E (p95).}
-\label{fig:e2e_factors}
+La \cref{fig:prec_lat_plat_elag_reso} représente la précision mAP@50 (axe $y$) en fonction de la latence E2E p95 (ms, axe $x$ en log), en distinguant plateformes, tailles de modèles et résolutions. Cette figure synthétise le compromis global : la précision augmente globalement avec la résolution et la taille du modèle, au prix d’une latence plus élevée.
+
+On observe une séparation claire des régimes : 4070 se situe dans la zone faible latence avec précision élevée, Orin et i9 forment un compromis intermédiaire, tandis que Pi et Oak sont décalés vers des latences nettement plus élevées pour des niveaux de précision comparables. Ce résultat met en évidence que, sur les cibles \textit{edge}, la contrainte de latence impose plus souvent de réduire résolution et taille du modèle, ce qui limite la précision atteignable à latence acceptable.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.8\linewidth]{fig_global_latency_precision.png}
+    \caption{Compromis précision/latence en fonction de la plateforme, du niveau d'élagage et de résolution}
+    \label{fig:prec_lat_plat_elag_reso}
 \end{figure}
 
-Enfin, plusieurs tendances secondaires ressortent de l’ensemble des mesures : (i) FP16 apparaît très légèrement plus lent que FP32 sur certaines plateformes (écart faible), ce qui suggère que le gain attendu en calcul n’est pas toujours dominant face aux surcoûts de conversion, d’implémentation ou de pipeline selon le \textit{runtime} ; (ii) sur OAK, un nombre de SHAVEs plus faible tend à aller de pair avec une latence légèrement plus élevée ; (iii) la résolution d’entrée a un impact modéré sur la puissance moyenne (plus grand $\Rightarrow$ légèrement plus gourmand), et FP32 tend à consommer un peu plus que FP16 ; (iv) à l’inverse, les niveaux de fusion ORT et le nombre de SHAVEs montrent peu de variations de puissance dans nos relevés.
+Les \cref{fig:puiss_lat_pi,fig:puiss_lat_orin,fig:puiss_lat_oak} montrent, pour Pi, Orin et Oak, un nuage de points puissance moyenne (W, axe $y$) vs latence E2E p95 (ms, axe $x$), et mettent en évidence les variantes non dominées (front de Pareto). Les points annotés correspondent aux configurations candidates selon l’objectif (minimiser la latence à puissance donnée, ou minimiser la puissance à latence donnée).
+
+Sur Pi, le front met en avant des variantes \texttt{n/256} comme meilleures en latence, avec quelques compromis à plus haute résolution. Sur Orin, le front est réduit et souligne surtout l’intérêt de FP16 à latence comparable. Sur Oak, un candidat \texttt{n/256/FP16} avec un nombre intermédiaire de SHAVEs ressort comme compromis favorable, ce qui est cohérent avec l’analyse précédente (SHAVEs agit surtout en réglage fin).
+
+\begin{figure}
+    \centering
+    \includegraphics[width=0.8\linewidth]{fig_pareto_pi.png}
+    \caption{Meilleures variantes évaluées sur Pi par rapport au compromis puissance électrique/latence}
+    \label{fig:puiss_lat_pi}
+\end{figure}
+
+\begin{figure}
+    \centering
+    \includegraphics[width=0.8\linewidth]{fig_pareto_orin.png}
+    \caption{Meilleures variantes évaluées sur Orin par rapport au compromis puissance électrique/latence}
+    \label{fig:puiss_lat_orin}
+\end{figure}
+
+\begin{figure}
+    \centering
+    \includegraphics[width=0.8\linewidth]{fig_pareto_oak.png}
+    \caption{Meilleures variantes évaluées sur Oak par rapport au compromis puissance électrique/latence}
+    \label{fig:puiss_lat_oak}
+\end{figure}
+
+\section{Conclusion} \label{sec:analyse_et_conclusion}
+
+Ce projet avait pour objectif d’étudier, dans un cadre reproductible, comment différentes couches d’optimisation d’un détecteur d’objets (YOLOv11) interagissent avec des plateformes hétérogènes, en particulier \textit{edge}. Pour cela, nous avons construit un \textit{workflow} unifié (export, compilation, exécution) et un protocole de \textit{benchmark} commun, mesurant principalement la latence \textit{end-to-end} (p95), la puissance moyenne au niveau système, et la précision (mAP@50), tout en instrumentant l’exécution pour interpréter les résultats.
+
+Les résultats montrent que les leviers les plus structurants sont ceux qui modifient directement la complexité du problème : la résolution d’entrée et la taille du modèle. Sur les cibles contraintes (Pi et Oak), la résolution domine largement la latence, avec une dégradation forte lorsque l’on monte en 512--640 px, tandis que l’Orin maintient un régime nettement plus rapide grâce à l’accélération GPU. La quantification FP16 améliore nettement le compromis énergétique sur les plateformes accélérées (Orin, 4070), alors que l’effet est faible ou négligeable sur CPU (i9 et, dans une moindre mesure, Pi). Côté \textit{runtime}, les optimisations de fusion ORT apportent un gain important sur i9, mais restent limitées sur Pi et quasi nulles sur 4070, ce qui confirme que leur intérêt dépend fortement du goulot (overhead d’exécution vs calcul accéléré). Enfin, les optimisations spécifiques plateforme se comportent comme attendu : sur Oak, le nombre de SHAVEs agit surtout comme réglage fin derrière résolution/élagage, et sur Orin les options \textit{heuristic} et \textit{sparsity} n’ont pas montré d’impact \textit{runtime} robuste dans nos conditions, ce qui suggère que leur effet principal est ailleurs (notamment sur le \textit{build time}) ou conditionné à des prérequis (sparsité structurée).
+
+Ces observations permettent de proposer, par plateforme, des configurations candidates via une lecture multi-objectif (fronts de Pareto puissance/latence) : (i) sur Pi et Oak, des variantes petites et basse résolution constituent la base la plus réaliste pour respecter des contraintes temps réel, (ii) sur Orin, FP16 domine généralement FP32 à latence comparable, et (iii) sur i9/4070, les choix de \textit{runtime} (fusions) et de précision peuvent surtout être guidés par des objectifs énergétiques plutôt que par la latence brute.
+
+Plusieurs limites doivent toutefois être soulignées : la comparabilité des métriques d’occupation accélérateur n’est pas parfaite (en particulier sur Oak), et le jeu de données coco128 réduit le temps d’évaluation mais peut limiter la stabilité statistique de certaines métriques. En ouverture, un prolongement naturel consisterait à (i) ajouter explicitement les métriques manquantes liées au déploiement (énergie par image, débit, mémoire, \textit{time-to-first-run} et temps de compilation des moteurs), (ii) étendre l’étude à INT8 (calibration) et à des optimisations structurelles (pruning/sparsité structurée) pour rendre effectives certaines options matérielles, et (iii) mieux caractériser les effets système (température, \textit{throttling}, multi-flux, contention CPU pré/post-traitement, transfert USB sur Oak) afin de rapprocher encore les mesures des contraintes d’une intégration \textit{IoT-CPS} réelle.
+
+
+% Nous analysons maintenant les résultats obtenus. Nous distinguons deux cas d’usage : (i) un scénario confortable (4070/i9) où l’objectif est de maximiser la qualité (mAP@50) tout en minimisant la latence (E2E p95), et (ii) un scénario plus \textit{edge} (Pi/Oak) où l’on cherche à minimiser la latence tout en minimisant la puissance électrique moyenne.
+
+% Pour la 4070 et le i9, nous représentons le compromis mAP@50 (à maximiser) vs E2E p95 (à minimiser) via un front de Pareto. Un point appartient au front s’il n’est dominé par aucun autre : autrement dit, il n’existe pas de configuration simultanément plus précise (mAP@50 plus élevé) et plus rapide (E2E p95 plus faible). Les \cref{fig:pareto_pc} ne montrent donc que les configurations meilleures candidates pour ce cas d’usage (12 sur 90 pour le 4070, et 16 sur 90 pour le i9).
+
+% \begin{figure}[H]
+% \centering
+% \begin{minipage}{0.49\linewidth}
+%   \centering
+%   \includegraphics[width=\linewidth]{pareto_4070.png}
+%   \caption*{(a) 4070}
+% \end{minipage}\hfill
+% \begin{minipage}{0.49\linewidth}
+%   \centering
+%   \includegraphics[width=\linewidth]{pareto_cpu.png}
+%   \caption*{(b) i9}
+% \end{minipage}
+% \caption{Fronts de Pareto pour représentant la mAP@50 à maximiser, et l'E2E p95 à minimiser. Les numéros renvoient aux configurations listées dans les \cref{tab:pareto_4070,tab:pareto_cpu}.}
+% \label{fig:pareto_pc}
+% \end{figure}
+
+% \begin{table}[h]
+% \centering
+% \footnotesize
+% \setlength{\tabcolsep}{3.5pt}
+% \begin{tabular}{r l r r r r r r r}
+% \hline
+% \textbf{ID} & \textbf{Label} & \textbf{mAP@50} & \textbf{p95 (ms)} & \textbf{MB} & \textbf{W} & \textbf{RSS} & \textbf{RAM sys} & \textbf{VRAM} \\
+% \hline
+% 1  & s 256 fp32 ORT ALL      & 0.5942 & 4.6367  & 36.12 & 117.67 & 1866.75 & 11062.20 & 358.33 \\
+% 2  & s 256 fp16 ORT ALL      & 0.5953 & 5.2967  & 18.09 & 102.33 & 1866.75 & 10991.55 & 283.00 \\
+% 3  & m 256 fp16 ORT ALL      & 0.6770 & 5.6300  & 38.42 & 114.00 & 1856.30 & 10683.69 & 356.33 \\
+% 4  & m 256 fp32 ORT DISABLE  & 0.6785 & 5.8367  & 76.75 & 150.33 & 1845.47 & 10740.47 & 483.00 \\
+% 5  & m 256 fp16 ORT BASIC    & 0.6793 & 5.8633  & 38.42 & 118.33 & 1856.31 & 10691.94 & 357.67 \\
+% 6  & m 320 fp32 ORT ALL      & 0.7034 & 6.8000  & 76.77 & 109.33 & 1871.49 & 10751.31 & 484.33 \\
+% 7  & m 416 fp32 ORT ALL      & 0.7452 & 8.9733  & 76.79 & 134.67 & 1843.27 & 10674.11 & 486.33 \\
+% 8  & m 416 fp16 ORT ALL      & 0.7487 & 10.0033 & 38.44 & 122.67 & 1853.58 & 10727.44 & 356.33 \\
+% 9  & m 512 fp32 ORT ALL      & 0.7783 & 11.5300 & 76.83 & 139.00 & 1838.39 & 10605.55 & 741.67 \\
+% 10 & m 512 fp16 ORT ALL      & 0.7788 & 12.6167 & 38.46 & 127.33 & 1842.44 & 10652.76 & 483.67 \\
+% 11 & m 640 fp32 ORT ALL      & 0.7800 & 16.1633 & 76.89 & 121.33 & 1481.47 & 10292.72 & 734.33 \\
+% 12 & m 640 fp16 ORT ALL      & 0.7809 & 17.0867 & 38.48 & 121.00 & 1813.53 & 10529.27 & 483.00 \\
+% \hline
+% \end{tabular}
+% \caption{Configurations non dominées (front de Pareto) sur RTX 4070 Laptop pour le cas d’usage \#1. RSS, RAM sys et VRAM sont en MB ; la puissance est en W.}
+% \label{tab:pareto_4070}
+% \end{table}
+
+% \begin{table}[h]
+% \centering
+% \footnotesize
+% \setlength{\tabcolsep}{3.5pt}
+% \begin{tabular}{r l r r r r r r}
+% \hline
+% \textbf{ID} & \textbf{Label} & \textbf{mAP@50} & \textbf{p95 (ms)} & \textbf{MB} & \textbf{W} & \textbf{RSS} & \textbf{RAM sys} \\
+% \hline
+% 1  & n 256 fp32 ORT ALL   & 0.4589 & 12.2367  & 10.07 & 97.33  & 866.00  & 12459.79 \\
+% 2  & n 256 fp16 ORT ALL   & 0.4590 & 13.1567  & 5.07  & 96.67  & 866.00  & 12397.68 \\
+% 3  & n 320 fp16 ORT ALL   & 0.5154 & 15.8967  & 5.08  & 97.67  & 866.26  & 12490.68 \\
+% 4  & s 256 fp32 ORT ALL   & 0.5943 & 17.1333  & 36.12 & 98.33  & 884.57  & 11820.61 \\
+% 5  & s 320 fp32 ORT ALL   & 0.6486 & 21.5167  & 36.13 & 99.00  & 888.61  & 11749.86 \\
+% 6  & s 320 fp16 ORT ALL   & 0.6499 & 24.0067  & 18.10 & 98.00  & 891.05  & 11827.09 \\
+% 7  & m 256 fp32 ORT ALL   & 0.6783 & 29.3333  & 76.75 & 98.33  & 981.24  & 11451.16 \\
+% 8  & s 416 fp32 ORT ALL   & 0.6911 & 33.3133  & 36.16 & 99.33  & 925.98  & 11672.47 \\
+% 9  & m 320 fp32 ORT ALL   & 0.7034 & 39.6133  & 76.77 & 98.56  & 996.60  & 11177.24 \\
+% 10 & s 512 fp32 ORT ALL   & 0.7307 & 42.3200  & 36.19 & 99.00  & 937.88  & 11445.71 \\
+% 11 & s 512 fp16 ORT ALL   & 0.7309 & 47.3567  & 18.13 & 98.22  & 944.51  & 11634.59 \\
+% 12 & m 416 fp32 ORT ALL   & 0.7452 & 61.3667  & 76.79 & 98.83  & 1061.00 & 11123.77 \\
+% 13 & m 512 fp32 ORT ALL   & 0.7782 & 84.3167  & 76.83 & 99.17  & 1091.08 & 11063.42 \\
+% 14 & m 640 fp32 ORT ALL   & 0.7802 & 122.7000 & 76.89 & 125.23 & 1210.44 & 11238.51 \\
+% 15 & m 640 fp16 ORT ALL   & 0.7805 & 132.0133 & 38.48 & 99.67  & 1267.36 & 10793.08 \\
+% 16 & m 640 fp16 ORT BASIC & 0.7806 & 207.3733 & 38.48 & 99.03  & 1207.62 & 10769.02 \\
+% \hline
+% \end{tabular}
+% \caption{Configurations non dominées (front de Pareto) sur CPU i9 pour le cas d’usage \#1. La VRAM n’est pas applicable en exécution CPU.}
+% \label{tab:pareto_cpu}
+% \end{table}
+
+% Sur GPU, un fait marquant est la forte représentation de la variante \texttt{m} (10/12) et du mode \texttt{ORT ALL} (10/12), suggérant que, lorsque le budget de calcul est suffisant, les optimisations de graphe ORT au niveau maximal contribuent fortement à obtenir des points à la fois rapides et précis. Sur CPU, le front couvre davantage de tailles (\texttt{n/s/m}) — ce qui reflète un compromis plus sensible entre complexité et latence — mais \texttt{ORT ALL} domine également (15/16), avec un unique point \texttt{ORT BASIC} nettement plus lent. Les tableaux permettent aussi de constater que (i) \texttt{FP16} réduit fortement la taille du modèle (et parfois la mémoire), mais (ii) n’apporte pas systématiquement un gain de latence sur ces configurations, ce qui rejoint l’observation globale discutée plus loin.
+
+% Dans un scénario plus \textit{edge}, où l’on suppose des ressources limitées, nous considérons le compromis puissance électrique moyenne (à minimiser) vs E2E p95 (à minimiser). Les fronts obtenus sont beaucoup plus restreints : 6 configurations pour la Pi et un unique point pour l’Oak dans cet extrait, ce qui reflète des contraintes fortes (notamment la nécessité de rester sur des modèles très légers et des résolutions faibles). Dans les deux cas, le front est constitué uniquement de variantes \texttt{n} ; sur Pi on observe essentiellement \texttt{ORT ALL} (et quelques points \texttt{ORT BASIC}), et sur OAK le point retenu correspond à \texttt{S6} (6 SHAVEs).
+
+% \begin{figure}[h]
+% \centering
+% \begin{minipage}{0.49\linewidth}
+%   \centering
+%   \includegraphics[width=\linewidth]{pareto_pi.png}
+%   \caption*{(a) Raspberry Pi 4}
+% \end{minipage}\hfill
+% \begin{minipage}{0.49\linewidth}
+%   \centering
+%   \includegraphics[width=\linewidth]{pareto_oak.png}
+%   \caption*{(b) OAK-D Pro (MyriadX)}
+% \end{minipage}
+% \caption{Fronts de Pareto pour le cas d’usage \#2 (puissance vs latence). Les numéros renvoient aux \cref{tab:pareto_pi,tab:pareto_oak}.}
+% \label{fig:pareto_edge}
+% \end{figure}
+
+% \begin{table}[h]
+% \centering
+% \footnotesize
+% \setlength{\tabcolsep}{3.5pt}
+% \begin{tabular}{r l r r r r r r}
+% \hline
+% \textbf{ID} & \textbf{Label} & \textbf{mAP@50} & \textbf{p95 (ms)} & \textbf{MB} & \textbf{W} & \textbf{RSS} & \textbf{RAM sys} \\
+% \hline
+% 1 & n 256 fp32 ORT ALL   & 0.4589 & 119.9933 & 10.07 & 5.8167 & 375.43 & 559.2933 \\
+% 2 & n 256 fp16 ORT ALL   & 0.4590 & 122.5867 & 5.07  & 5.7500 & 375.43 & 556.0800 \\
+% 3 & n 256 fp16 ORT BASIC & 0.4590 & 139.3500 & 5.07  & 5.7433 & 375.43 & 556.1000 \\
+% 4 & n 416 fp16 ORT ALL   & 0.5801 & 288.0167 & 5.09  & 5.5900 & 375.42 & 555.6167 \\
+% 5 & n 512 fp16 ORT ALL   & 0.6376 & 425.4933 & 5.11  & 5.1700 & 396.79 & 577.1433 \\
+% 6 & n 512 fp16 ORT BASIC & 0.6376 & 440.4000 & 5.11  & 5.1633 & 404.66 & 585.7467 \\
+% \hline
+% \end{tabular}
+% \caption{Configurations non dominées (front de Pareto) sur Raspberry Pi 4 pour le cas d’usage \#2.}
+% \label{tab:pareto_pi}
+% \end{table}
+
+% \begin{table}[h]
+% \centering
+% \footnotesize
+% \setlength{\tabcolsep}{3.5pt}
+% \begin{tabular}{r l r r r r r r}
+% \hline
+% \textbf{ID} & \textbf{Label} & \textbf{mAP@50} & \textbf{p95 (ms)} & \textbf{MB} & \textbf{W} & \textbf{RSS} & \textbf{RAM sys} \\
+% \hline
+% 1 & n 256 fp16 OAK S6 & 0.4567 & 72.6167 & 5.54 & 5.8667 & 386.2767 & 559.6400 \\
+% \hline
+% \end{tabular}
+% \caption{Configuration non dominée sur OAK-D Pro pour le cas d’usage \#2.}
+% \label{tab:pareto_oak}
+% \end{table}
+
+% Pour isoler l’effet des principaux leviers, nous analysons ensuite les métriques moyennes regroupées par facteur. Les \cref{fig:map_factors} confirment que la qualité (mAP@50) est principalement corrélée (i) à la taille du modèle (\texttt{m} $>$ \texttt{s} $>$ \texttt{n}) et (ii) à la résolution d’entrée (plus l’image est grande, plus la mAP@50 augmente), avec des tendances globalement cohérentes d’un matériel à l’autre. À l’inverse, dans nos mesures, la quantification FP16/FP32, le nombre de SHAVEs (OAK) et le niveau de fusion ORT n’ont pas montré d’impact significatif sur la mAP@50 (à l’échelle des variations observées).
+
+% \begin{figure}[h]
+% \centering
+% \begin{minipage}{0.49\linewidth}
+%   \centering
+%   \includegraphics[width=\linewidth]{map_per_scale.png}
+%   \caption*{(a) mAP@50 vs taille \texttt{n/s/m}}
+% \end{minipage}\hfill
+% \begin{minipage}{0.49\linewidth}
+%   \centering
+%   \includegraphics[width=\linewidth]{map_per_size.png}
+%   \caption*{(b) mAP@50 vs résolution}
+% \end{minipage}
+% \caption{Effet des principaux leviers de compilation sur la qualité (mAP@50).}
+% \label{fig:map_factors}
+% \end{figure}
+
+% Du côté des performances temporelles, les \cref{fig:e2e_factors} montrent une corrélation forte entre résolution et latence E2E : plus l’entrée est grande, plus l’inférence est lente, ce qui est attendu (plus de pixels à traiter). On notera que les barres Pi et OAK peuvent sembler proches à certains endroits car les valeurs sont agrégées : or la Pi n’exécute ici que des variantes \texttt{n}, tandis que l’OAK inclut aussi des variantes \texttt{s/m}, ce qui peut biaiser la comparaison directe si l’on ne contrôle pas la taille de modèle. Enfin, concernant les optimisations ORT, nous observons une légère dominance du mode \texttt{ALL} (et parfois \texttt{DISABLE}) par rapport à \texttt{BASIC}, ce dernier apparaissant en moyenne comme le plus lent sur ces regroupements.
+
+% \begin{figure}[h]
+% \centering
+% \begin{minipage}{0.49\linewidth}
+%   \centering
+%   \includegraphics[width=\linewidth]{e2e_size.png}
+%   \caption*{(a) E2E p95 vs résolution}
+% \end{minipage}\hfill
+% \begin{minipage}{0.49\linewidth}
+%   \centering
+%   \includegraphics[width=\linewidth]{e2e_fusion.png}
+%   \caption*{(b) E2E p95 vs fusion ORT}
+% \end{minipage}
+% \caption{Effet des facteurs principaux sur la latence E2E (p95).}
+% \label{fig:e2e_factors}
+% \end{figure}
+
+% Enfin, plusieurs tendances secondaires ressortent de l’ensemble des mesures : (i) FP16 apparaît très légèrement plus lent que FP32 sur certaines plateformes (écart faible), ce qui suggère que le gain attendu en calcul n’est pas toujours dominant face aux surcoûts de conversion, d’implémentation ou de pipeline selon le \textit{runtime} ; (ii) sur OAK, un nombre de SHAVEs plus faible tend à aller de pair avec une latence légèrement plus élevée ; (iii) la résolution d’entrée a un impact modéré sur la puissance moyenne (plus grand $\Rightarrow$ légèrement plus gourmand), et FP32 tend à consommer un peu plus que FP16 ; (iv) à l’inverse, les niveaux de fusion ORT et le nombre de SHAVEs montrent peu de variations de puissance dans nos relevés.
 
 % % Faire le pont avec section précédentes, on va maintenant analyse les résultats.
 % % En premier, on s'intéresse aux GPU du PC et au CPU. On considère un cas d'usage pas trop edge, ou on a du budget et de la puissance, et on s'intéresse plutôt à  maxer le map50 moyen, et minimiser l'E2E.
@@ -896,7 +924,7 @@ Enfin, plusieurs tendances secondaires ressortent de l’ensemble des mesures : 
 
 % pas de différences entre les shaves sur la conso et peu de variation entre les niveaux de fusions et la conso.
 
-\section{Analyse et conclusion} \label{sec:analyse_et_conclusion}
+% \section{Analyse et conclusion} \label{sec:analyse_et_conclusion}
 
 \section*{Annexe}
 
@@ -983,28 +1011,6 @@ Enfin, plusieurs tendances secondaires ressortent de l’ensemble des mesures : 
 \label{tab:fusion}
 \end{table}
 
-\begin{table}[h]
-\centering
-\begin{tabular}{|l|c|c|}
-\hline
-\textbf{Metric} & \textbf{H0} & \textbf{H1} \\
-\hline
-\multirow{1}{*}{E2E p95 (ms)} 
-& \textbf{47.08} & 47.42 \\
-\hline
-\multirow{1}{*}{mAP@50 (\%)} 
-& \textbf{66.32} & 66.3 \\
-\hline
-\multirow{1}{*}{GPU util (\%)} 
-& \textbf{45.88} & 46.23 \\
-\hline
-\multirow{1}{*}{Power mean (W)} 
-& 1.87 & \textbf{1.84} \\
-\hline
-\end{tabular}
-\caption{Mesures en fonction des niveaux d'\textit{heuristic}}
-\label{tab:heuristic}
-\end{table}
 
 \begin{table}[h]
 \centering
@@ -1119,46 +1125,9 @@ Enfin, plusieurs tendances secondaires ressortent de l’ensemble des mesures : 
 \label{tab:threads}
 \end{table}
 
-\begin{table}[h]
-\centering
-\begin{tabular}{|l|c|c|}
-\hline
-\textbf{Metric} & \textbf{SP0} & \textbf{SP1} \\
-\hline
-\multirow{1}{*}{E2E p95 (ms)} 
-& 47.31 & \textbf{47.19} \\
-\hline
-\multirow{1}{*}{mAP@50 (\%)} 
-& \textbf{66.31} & 66.3 \\
-\hline
-\multirow{1}{*}{GPU util (\%)} 
-& 46.67 & \textbf{45.44} \\
-\hline
-\multirow{1}{*}{Power mean (W)} 
-& 1.87 & \textbf{1.84} \\
-\hline
-\end{tabular}
-\caption{Mesures en fonction du niveau de \textit{sparsity}}
-\label{tab:sparse}
-\end{table}
 
-
-% \section{Description du système}
-% \subsection{Identification des besoins capteurs} %Identification of the sensors, their sources of uncertainty, and working ranges
-% \subsection{Caracteristiques des capteurs }
-% \subsection{Sources d'incertitude}
-% \section{Sensor data pre-processing stage}
-% \subsection{Architecture du Pipeline d'Inférence sur OAK-D}
-% \section{NN architecture and computation graph description (il faut parler de yolo ici?)}
-% \subsection{YOLO11}
-% \section{Model optimisation process}
-% \subsection{Ingestion et Standardisation des Données}
-% \subsection{Entraînement et Transfer Learning}
-% \subsection{Génération Automatisée de Variantes}
-% \subsection{Compilation Spécifique au Matériel}
-% \section{Résultat} %Benchmark results
-% \subsection{Criteres d'évaluation}
-% \subsection{résultats par rapport au méteriel}
-% \subsection{résultat par rapport au modèle }
-% \section{Github repo and documentation}
+% \newpage         
+% \listoffigures   
+% \newpage         
+% \listoftables
 \end{document}
