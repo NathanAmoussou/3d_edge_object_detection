@@ -4,6 +4,8 @@
 \usepackage[utf8]{inputenc}
 \usepackage[T1]{fontenc}
 \usepackage{lmodern}
+\usepackage{multirow}
+
 
 % Packages essentiels
 \usepackage{amsmath,amssymb}
@@ -39,10 +41,11 @@
   \renewcommand{\headrulewidth}{0pt}
   \renewcommand{\footrulewidth}{0pt}
 }
-
-% Hyperliens (à charger en dernier)
 \usepackage{hyperref}
 \usepackage[french]{cleveref}
+\usepackage{booktabs} 
+\usepackage{tabularx}
+\usepackage{xltabular}
 
 \begin{document}
 % Titre et auteur
@@ -95,6 +98,8 @@
 
 \maketitle
 
+\tableofcontents
+
 % \section{Context of the project and objectives}
 
 \section{Introduction}
@@ -109,7 +114,8 @@ Dans ce contexte, l’optimisation de modèles---via des leviers agissant sur le
 
 Dans cette logique, le projet présenté dans ce rapport consiste à, partant d’un modèle d’IA et d’une sélection de plateformes matérielles (décrites en \cref{sec:contexte}), appliquer plusieurs couches d’optimisations (décrites en \cref{sec:benchmarking,subsec:optimisations_appliquees}). 
 Nous mesurons ensuite l’impact de ces choix sur des métriques de performance et de coût en veillant à rendre les comparaisons aussi équitables que possible via un protocole commun (décrit en \cref{subsec:protocole_de_benchmarking,sec:resultats}). 
-L’objectif final est d’identifier, pour chaque plateforme, les compromis les plus pertinents et de conclure sur la ou les combinaisons d’optimisations offrant le meilleur équilibre entre efficacité et qualité d’inférence, par exemple (\cref{sec:analyse_et_conclusion}). 
+
+L’objectif final de ce projet est d’identifier, pour chaque plateforme, les compromis les plus pertinents et de conclure sur la ou les combinaisons d’optimisations offrant le meilleur équilibre entre efficacité et qualité d’inférence, par exemple (\cref{sec:analyse_et_conclusion}). 
 
 \section{Cas d'usage choisi} \label{sec:contexte} 
 % TODO : Modifier le titre
@@ -122,9 +128,11 @@ Comme architecture d'IA à optimiser, nous avons choisi un modèle de vision par
 Ce type de réseau reçoit en entrée une image (ou une séquence d’images pour une vidéo) et produit en sortie un ensemble de prédictions décrivant où se trouvent les objets d’intérêt et de quel type ils sont : typiquement des boîtes englobantes (\textit{bounding boxes}), associées à une classe et à un score de confiance. 
 Dans la suite, l’ensemble de nos optimisations viseront donc à accélérer et/ou alléger cette chaîne d’inférence tout en contrôlant la dégradation éventuelle de la qualité de détection.
 
-Dans ce cadre, nous choisissons \href{https://docs.ultralytics.com/fr/models/yolo11/}{YOLO11}, une famille de détecteurs d’objets temps réel publiée par l’entreprise américaine Ultralytics en septembre 2024.
+Dans ce cadre, nous choisissons \href{https://docs.ultralytics.com/fr/models/yolo11/}{\textbf{YOLO11}}, une famille de détecteurs d’objets temps réel publiée par l’entreprise américaine Ultralytics en septembre 2024.
 Cette gamme est conçue pour offrir un bon compromis entre précision, vitesse et efficacité et est explicitement pensée pour être déployée dans des environnements variés (du GPU aux dispositifs \textit{edge}).
 Ce choix est motivé à la fois par le caractère très représentatif de YOLO pour des cas d’usage \textit{edge}/embarqué, et par l’adéquation avec nos besoins de projet centrés sur la vision.
+
+%TODO : Justifier pourquoi on l'a choisit.
 
 \subsection{Matériel}
 
@@ -137,13 +145,91 @@ Ce choix est motivé à la fois par le caractère très représentatif de YOLO p
 % - un nvidia jetson orin nano 4GB (on s'intéresse au GPU)
 % - une luxonis OAK D Pro (on s'intéresse au VPU myriad accélérateur)
 
-À la suite du choix de l’architecture IA et afin d’évaluer l’effet des optimisations dans des conditions réalistes, nous testons l’inférence sur un ensemble de plateformes hétérogènes. 
-Nous distinguons d’abord deux machines de référence---qui ne constituent pas notre cible principale \textit{edge}/embarqué, mais servent de point de comparaison indicatif---: un PC portable équipé d’un GPU NVIDIA RTX 4070 (8 Go de VRAM) et de 32 Go de RAM (nommé \textit{4070} dans la suite de ce document), ainsi qu’un CPU Intel Core i9-14900HX (24 cœurs / 32 \textit{threads}, 32 Go de RAM, nommé ensuite \textit{i9}).
+% À la suite du choix de l’architecture IA et afin d’évaluer l’effet des optimisations dans des conditions réalistes, nous testons l’inférence sur un ensemble de plateformes hétérogènes. 
+% Nous distinguons d’abord deux machines de référence---qui ne constituent pas notre cible principale \textit{edge}/embarqué, mais servent de point de comparaison indicatif---: un PC portable équipé d’un GPU NVIDIA RTX 4070 (8 Go de VRAM) et de 32 Go de RAM (nommé \textit{4070} dans la suite de ce document), ainsi qu’un CPU Intel Core i9-14900HX (24 cœurs / 32 \textit{threads}, 32 Go de RAM, nommé ensuite \textit{i9}).
 
-Pour coller à notre cas d’usage \textit{edge}, nous retenons également trois dispositifs représentatifs de familles d’accélération différentes. 
-Le Raspberry Pi 4 (nommé ensuite \textit{Pi}) constitue une cible CPU-\textit{only} (Cortex-A72, quatre cœurs/\textit{threads}) où l’on cherche surtout à maîtriser les performances sous fortes contraintes. 
-Le NVIDIA Jetson Orin Nano 4GB (nommé ensuite \textit{Orin}) apporte un GPU embarqué (architecture Ampere, 512 cœurs CUDA et 16 Tensor Cores) et 4 Go de LPDDR5, ce qui en fait une plateforme adaptée à l’exploration d’optimisations tirant parti du calcul parallèle. 
-Enfin, la Luxonis OAK-D Pro (nommé ensuite \textit{Oak}) embarque un VPU Movidius Myriad X, typique d’une approche utilisant un accélérateur dédié pour exécuter des modèles de vision efficacement à faible consommation.
+% Pour coller à notre cas d’usage \textit{edge}, nous retenons également trois dispositifs représentatifs de familles d’accélération différentes. 
+% Le Raspberry Pi 4 (nommé ensuite \textit{Pi}) constitue une cible CPU-\textit{only} (Cortex-A72, quatre cœurs/\textit{threads}) où l’on cherche surtout à maîtriser les performances sous fortes contraintes. 
+% Le NVIDIA Jetson Orin Nano 4GB (nommé ensuite \textit{Orin}) apporte un GPU embarqué (architecture Ampere, 512 cœurs CUDA et 16 Tensor Cores) et 4 Go de LPDDR5, ce qui en fait une plateforme adaptée à l’exploration d’optimisations tirant parti du calcul parallèle. 
+% Enfin, la Luxonis OAK-D Pro (nommé ensuite \textit{Oak}) embarque un VPU Movidius Myriad X, typique d’une approche utilisant un accélérateur dédié pour exécuter des modèles de vision efficacement à faible consommation.
+
+À la suite du choix de l’architecture IA et afin d’évaluer l’effet des optimisations dans des conditions réalistes, nous testons l’inférence sur un ensemble de plateformes hétérogènes.
+Notre cible principale étant l’IA \textit{edge}/embarqué, nous décrivons d’abord trois dispositifs représentatifs de familles d’accélération différentes :
+
+\begin{itemize}
+    \item \textbf{Raspberry Pi 4 (\textit{Pi})} --- cible CPU-\textit{only} généraliste.
+    Le Pi repose sur un SoC Broadcom BCM2711 intégrant un CPU ARM Cortex-A72 (4 cœurs) et une mémoire LPDDR4 partagée. 
+    En l’absence d’accélérateur IA dédié, l’inférence est principalement limitée par le budget de calcul scalaire/SIMD du CPU, ainsi que par la bande passante mémoire et les effets thermiques.
+    Dans la section résultats, cette plateforme sert à analyser les gains des optimisations dans un régime fortement contraint.
+    % TODO : Vérifier cette dernière phrase.
+
+    \item \textbf{NVIDIA Jetson Orin Nano 4GB (\textit{Orin})} --- focus GPU-\textit{first}.
+    L’Orin Nano combine un CPU ARM Cortex-A78AE (6 cœurs) et un GPU NVIDIA Ampere (512 cœurs CUDA, 16 Tensor Cores), avec 4~Go de LPDDR5 (64-bit, $\sim$34~GB/s).
+    Un GPU (\textit{Graphics Processing Unit}) est un processeur massivement parallèle, particulièrement efficace pour les opérations de type produits matriciels, ce qui se traduit en pratique par une accélération notable de l’inférence IA par rapport à un CPU généraliste lorsque le modèle est bien vectorisable.
+    Dans ce projet, nous utilisons explicitement l’Orin comme une plateforme d’inférence accélérée GPU : le modèle est exécuté côté GPU via l’écosystème NVIDIA (CUDA/TensorRT), afin de tirer parti des Tensor Cores.
+    Le CPU est principalement utilisé pour l’orchestration et une partie du pré/post-traitement, ce qui permet d’étudier séparément les goulots d’étranglement GPU et CPU + transferts.
+    Les limites attendues sont la capacité mémoire (4~Go) et la bande passante mémoire lorsque la résolution ou les activations augmentent, ainsi que le coût CPU du pré/post-traitement si l’inférence GPU devient très rapide.
+    % TODO : Vérifier cette dernière phrase.
+
+    \item \textbf{Luxonis OAK-D Pro (\textit{Oak})} --- focus VPU-\textit{first}.
+    L’OAK-D Pro est une caméra qui exécute une grande partie du pipeline (traitements de vision, profondeur stéréo et inférence) sur un VPU embarqué (plateforme DepthAI/RVC).
+    Un VPU (\textit{Vision Processing Unit}) est un accélérateur spécialisé pour la vision, conçu pour exécuter efficacement des traitements d’imagerie et des réseaux de neurones \`a faible consommation, avec un meilleur compromis perf/W qu’un CPU.
+    Cette approche favorise l’efficacité énergétique et réduit la charge du CPU hôte, mais impose des contraintes plus fortes de mémoire embarquée et de compatibilité opérateur (modèles à convertir/adapter).
+    Le goulot d’étranglement peut provenir du VPU (capacité de calcul/mémoire, support d’opérateurs), mais aussi du \textit{dataflow} hôte $\leftrightarrow$ caméra (USB).
+    % TODO : Vérifier cette dernière phrase.
+\end{itemize}
+
+En complément (hors cible principale \textit{edge}/embarqué), nous utilisons deux machines de référence comme points de comparaison indicatifs : (i) un PC portable \textit{4070} équipé d’un GPU \textbf{NVIDIA GeForce RTX 4070 Laptop} (8~Go de VRAM) et de 32~Go de RAM, et (ii) un PC portable \textit{i9} basé sur un \textbf{Intel Core i9-14900HX} (24 cœurs / 32 \textit{threads}, 32~Go de RAM).
+
+\begin{table}[H]
+    \centering
+    \footnotesize
+    \caption{Caractéristiques matérielles des plateformes et mise en relation avec les goulots d'étranglement observés.}
+    \label{tab:hardware_specs_bottlenecks}
+    
+    % J'utilise p{...} pour la colonne Mémoire pour permettre les retours à la ligne
+    \begin{tabularx}{\textwidth}{@{}l X X p{2.5cm} X@{}}
+        \toprule
+        \textbf{Plateforme} & \textbf{Processeur hôte} & \textbf{Accélérateur} & \textbf{Mémoire} & \textbf{\textit{Bottleneck}} \\
+        \midrule
+        
+        % RPi 4
+        \textbf{Pi} & 
+        ARM Cortex-A72 \newline (4 cœurs) & 
+        \textit{Aucun} (CPU-only) & 
+        LPDDR4 \newline (Partagée) & SIMD saturé, latence élevée due à l'absence d'accélération dédiée. \\
+        \addlinespace
+        
+        % Orin Nano
+        \textbf{Orin} & 
+        ARM Cortex-A78AE \newline (6 cœurs) & 
+        GPU NVIDIA Ampere \newline (512 cœurs, 16 Tensor Cores) & 
+        4 Go LPDDR5 \newline (Partagée) & 4 Go de mémoires et  coût du pré/post-traitement sur CPU. \\
+        \addlinespace
+        
+        % OAK-D Pro
+        \textbf{Oak} & 
+        Déporté sur Hôte \newline (via USB) & 
+        VPU Myriad X & 
+        Embarquée \newline (VPU) & Latence de transfert USB hôte-caméra et capacité de calcul du VPU. \\
+        \addlinespace
+        
+        % PC i9
+        \textbf{i9} & 
+        Intel Core i9-14900HX \newline (24 cœurs) & 
+        \textit{Aucun} (CPU-only) & 
+        32 Go RAM & Puissance brute élevée mais ratio perf/Watt défavorable par rapport au GPU. \\
+        \addlinespace
+        
+        % PC 4070
+        \textbf{4070} & 
+        Intel Core i9 & 
+        NVIDIA RTX 4070 \newline (Laptop, 8 Go VRAM) & 
+        8 Go VRAM \newline (Dédiée) & Inférence très rapide, le goulot se déplace vers les transferts PCIe et le driver. \\
+        
+        \bottomrule
+    \end{tabularx}
+\end{table}
 
 \section{Optimisations} \label{sec:benchmarking}
 
@@ -172,22 +258,22 @@ Afin de structurer notre exploration, nous regroupons les optimisations en quatr
 Intuitivement, la compilation regroupe tout ce qui transforme le modèle avant l’exécution (export, conversion de format, génération d’un moteur, choix de précision, etc.), tandis que le \textit{runtime} correspond aux réglages appliqués au moment de l’inférence/l'utilisation (p.\,ex. fusions de couches activées par le moteur, choix du niveau d’optimisation du graphe).
 Dans notre protocole, nous nous appuyons sur trois moteurs d’exécution (de \textit{runtime}) :
 \begin{enumerate}
-\item ONNX Runtime (ORT) pour exécuter des modèles au format ONNX (format standard décrivant un modèle IA sous forme d'un graphe de calcul),
-\item TensorRT (TRT) sur matériel NVIDIA (génération d’un modèle IA sous un format \textit{engine} optimisé puis exécution),
-\item et le \textit{runtime} DepthAI (DRT) sur Oak (exécution d’un modèle compilé au format \texttt{.blob} pour le VPU MyriadX).
+\item \textbf{ONNX Runtime (ORT)} pour exécuter des modèles au format ONNX (format standard décrivant un modèle IA sous forme d'un graphe de calcul),
+\item \textbf{TensorRT (TRT)} sur matériel NVIDIA (génération d’un modèle IA sous un format \textit{engine} optimisé pour matériel NVIDIA),
+\item et le \textbf{\textit{runtime} DepthAI (DRT)} sur Oak (exécution d’un modèle compilé au format \texttt{.blob} pour le VPU MyriadX).
 \end{enumerate}
-Le \cref{tab:runtimes_par_plateforme} récapitule, pour chaque plateforme matérielle, le ou les moteurs d’exécution (\emph{runtime}) retenus afin d’assurer une comparaison cohérente entre cibles.
+Le \cref{tab:runtimes_par_plateforme} récapitule, pour chaque plateforme matérielle, le moteurs d’exécution (\emph{runtime}) retenus afin d’assurer une comparaison cohérente entre cibles.
 
 \begin{table}[ht]
 \centering
 \begin{tabular}{l l}
 \hline
-\textbf{Matériel cible} & \textbf{Moteur(s) utilisé(s)} \\
+\textbf{Matériel} & \textbf{Moteur} \\
 \hline
 i9 & ORT \\
 4070 & ORT \\
 Pi & ORT \\
-Orin & ORT \& TRT \\
+Orin & TRT\\
 Oak & DRT \\
 \hline
 \end{tabular}
@@ -195,20 +281,24 @@ Oak & DRT \\
 \label{tab:runtimes_par_plateforme}
 \end{table}
 
-\newpage
-
 \subsection{Optimisations à la compilation}
 
 \subsubsection{Optimisations agnostiques matériel}
 
 Notre base d’expériences repose sur trois leviers, indépendants de la plateforme, qui modifient directement la complexité et/ou le coût numérique du modèle :
 \begin{itemize}
-\item Taille du modèle (élagage/variante de YOLO) : \{\texttt{n}, \texttt{s}, \texttt{m}\}.
+\item \textbf{Taille (élagage) du modèle} (variante YOLO) : \{\texttt{n}, \texttt{s}, \texttt{m}\}.
 Une variante plus petite d'un modèle d'IA réduit typiquement le nombre de paramètres et d’opérations, donc la latence et la mémoire, au prix d’une précision potentiellement moindre.
-\item Résolution d’entrée du modèle : \{640, 512, 416, 320, 256\}.
-Une résolution d'image donnée en entrée au modèle plus faible diminue le coût de calcul (moins de pixels à traiter) et accélère l’inférence, mais peut dégrader la détection des petits objets.
-\item Quantification du modèle (précision flottante) : \{\texttt{FP32}, \texttt{FP16}\}.
+Concrètement dans notre \textit{workflow}, nous utilisons directement les checkpoints officiels Ultralytics (\texttt{yolo11n.pt}, \texttt{yolo11s.pt}, \texttt{yolo11m.pt}) et nous exportons chaque variante séparément au format ONNX.
+Ce levier est particulièrement critique sur les cibles \textit{edge} contraintes et devrait réduire aussi l’empreinte mémoire côté GPU, ce qui limite les saturations mémoire et stabilise la latence.
+\item \textbf{Résolution d’entrée du modèle} : \{640, 512, 416, 320, 256\}.
+Une résolution d'image en entrée du modèle plus faible diminue le coût de calcul (moins de pixels à traiter) et accélère l’inférence, mais peut dégrader la détection des petits objets.
+Dans notre code, la résolution est fixée à l’export via l’argument \texttt{imgsz} (export ONNX non-dynamique), ce qui fige la forme du tenseur d’entrée et, par conséquent, les dimensions des tenseurs produits par la tête de détection ; au runtime, on applique le même \emph{letterbox} vers $(\texttt{imgsz},\texttt{imgsz})$ pour rester cohérent.
+Sur les plateformes où la mémoire/bande passante est un facteur (LPDDR4/Pi, LPDDR5 4~Go/Orin) et/ou où le pipeline est serré (Oak), ce choix devrait réduire fortement la taille des activations et donc la pression mémoire et les transferts, souvent déterminants pour la latence \textit{end-to-end}.
+\item \textbf{Quantification du modèle} : \{\texttt{FP32}, \texttt{FP16}\}.
 Passer en \texttt{FP16} réduit la bande passante mémoire et peut accélérer l’exécution sur du matériel qui l’exploite bien, avec un impact généralement limité sur la qualité.
+Concrètement, on pilote ce choix dès l’export Ultralytics via \texttt{half=True} (FP16) ou \texttt{half=False} (FP32), ce qui produit des modèles ONNX dont l’entrée (et les poids) sont en \texttt{float16} ou \texttt{float32} ; lors du benchmark, on détecte ce dtype et on alimente l’inférence avec des tenseurs du même type.
+C’est surtout pertinent sur les plateformes GPU où TensorRT/CUDA peut exploiter des chemins FP16 optimisés (notamment via les Tensor Cores) et où la réduction de bande passante/VRAM aide directement à tenir dans des budgets mémoire serrés (ex.~4~Go sur Orin).
 \end{itemize}
 % Ces trois axes définissent $3\times 5\times 2 = 30$ variantes de base.
 
@@ -216,78 +306,93 @@ Passer en \texttt{FP16} réduit la bande passante mémoire et peut accélérer l
 
 Certaines optimisations dépendent directement de l’accélérateur ciblé :
 \begin{itemize}
-\item Oak --- nombre de SHAVEs : \{4, 5, 6, 7, 8\}.
-Les SHAVEs sont des processeurs vectoriels internes ; en allouer davantage peut améliorer le débit de certaines opérations, au prix d’une contention possible avec d’autres traitements sur l’appareil.
-\item Orin + TRT --- niveau d’optimisation du compilateur : \{3, 4, 5\}.
-Un niveau plus élevé peut permettre au moteur de compilation de chercher des stratégies plus performantes (souvent au prix d’un temps de compilation plus long).
-\item Orin + TRT --- \textit{sparsity} : \{\texttt{false}, \texttt{true}\}.
-Lorsque le modèle et le matériel le permettent, activer la \emph{sparsity} vise à tirer parti d’une accélération matérielle pour des poids structurés clairsemés.
+\item \textbf{Oak --- nombre de SHAVEs} : \{4, 5, 6, 7, 8\}.
+Les SHAVEs sont des processeurs vectoriels internes du VPU ; en allouer davantage pour l'inférence du modèle d'IA peut améliorer le débit de certaines opérations, au prix d’une contention possible avec d’autres traitements sur l’appareil.
+Dans notre \textit{workflow}, on ne change pas les SHAVEs à l’exécution : on recompile le modèle pour l’OAK en générant un \texttt{.blob} via les outils DepthAI (conversion/compilation), en fixant le nombre de SHAVEs lors de la compilation (paramètre de type \texttt{-sh}/\texttt{numShaves}).
+Côté matériel, cet hyperparamètre agit directement sur la part de ressources du VPU réservée au réseau : cela peut réduire la latence ou augmenter le débit sur Oak si le réseau est limité par le calcul vectoriel, mais l’effet n’est pas garanti monotone car il dépend aussi des autres blocs actifs (ISP, stéréo, transferts/queues hôte $\leftrightarrow$ caméra).
+
+\item \textbf{Orin --- heuristique de \textit{build}} (sélection de tactiques) : \{\texttt{false}, \texttt{true}\}.
+Activer ce mode demande à TensorRT d’utiliser une sélection heuristique de certaines tactiques afin de réduire le temps de génération de l’\textit{engine}, au prix potentiel d’un \textit{engine} légèrement moins performant qu’avec une recherche/profilage plus exhaustive.
+Dans notre \textit{workflow}, ce choix est appliqué uniquement au moment de la construction de l’\textit{engine} TensorRT (compilation ONNX $\rightarrow$ \textit{engine}) en basculant l’option \texttt{heuristic} ON/OFF dans la configuration du \textit{builder} ; ensuite, l’\textit{engine} est réutilisé (cache) pour exécuter les mesures.
+Côté matériel, cela n’accélère pas directement le GPU : l’objectif est surtout de raccourcir la phase de compilation et donc le \textit{time-to-first-run}. On s’attend donc à un impact faible (souvent nul) sur les performances \textit{runtime} une fois l’\textit{engine} construit, même si en théorie un choix heuristique peut conduire à des tactiques un peu moins optimales.
+
+\item \textbf{Orin --- \textit{sparsity}} : \{\texttt{false}, \texttt{true}\}.
+Lorsque le modèle et le matériel le permettent, activer la sparsity vise à tirer parti d’une accélération matérielle pour des poids structurés clairsemés.
+Dans notre \textit{workflow}, on active/désactive ce mode au moment de la construction TensorRT (\texttt{--sparsity=enable}), sans modifier l’architecture à l’exécution.
+Côté matériel, l’accélération est conditionnée à une sparsité structurée 2:4 exploitée par les Tensor Cores ; comme nos modèles YOLO ne sont pas entraînés/prunés pour respecter ce motif, activer la sparsité devrait être en grande partie ignoré (ou n’apporter qu’un gain négligeable) sur l’Orin.
 \end{itemize}
 
 \subsection{Optimisations au \textit{runtime} (agnostiques matériel)}
 
 \subsubsection{Optimisations agnostiques matériel}
 
-Au moment de l’exécution, nous évaluons un réglage portable via ORT :
-\begin{itemize}
-  \item Fusions/optimisations de graphe ORT : \{\texttt{DISABLE\_ALL}, \texttt{ENABLE\_BASIC}, \texttt{ENABLE\_EXTENDED}, \texttt{ENABLE\_ALL}\}.
-  L’objectif est de réduire le coût d’exécution (moins d’opérations, meilleure localité mémoire) sans changer la sémantique du modèle.
-\end{itemize}
+Nous n’avons pas retenu d’optimisations \textit{runtime} agnostiques des plateformes.
 
 \subsubsection{Optimisations spécifiques plateforme}
 
-Nous n’avons pas retenu d’optimisations \textit{runtime} supplémentaires spécifiques à une plateforme (au-delà du choix du moteur lui-même, ORT vs TRT).
+Au moment de l’exécution, nous évaluons un réglage de la fusion du graphe via ORT :
+\begin{itemize}
+  \item \textbf{Pi, i9, 4070 --- Fusion de graphe} : \{\texttt{DISABLE\_ALL}, \texttt{ENABLE\_BASIC}, \texttt{ENABLE\_EXTENDED}, \texttt{ENABLE\_ALL}\}.
+  Juste avant l'exécution d'un modèle, ORT applique un ensemble de passes sans changement sémantique sur le graphe ONNX (simplifications, \textit{constant folding}, élimination de nœuds redondants, fusions d’opérateurs compatibles...). Le but est de réduire le nombre d’opérations exécutées et les mouvements mémoire (moins de kernels/appels, meilleure localité), ce qui devrait diminuer la latence E2E.
+  Le gain est en général plus marqué sur CPU, où réduire les allocations, copies et surcoûts d’exécution améliore directement les performances et la pression mémoire. Sur GPU via ORT, les fusions peuvent aussi aider en réduisant des lancements de kernels et des passages mémoire, mais l’effet peut être moins net si le goulot principal est ailleurs (pré/post-traitement CPU, transferts). Enfin, sur Orin en TensorRT EP, l’impact de ces optimisations ORT est typiquement limité car TensorRT applique déjà ses propres optimisations/fusions lors de la construction de l’engine.
+\end{itemize}
 
 \subsection{Récapitulatif}
 
 Le \cref{tab:optimisations_synthese} récapitule l’ensemble des optimisations étudiées, en distinguant celles appliquées à la compilation et au \textit{runtime}, ainsi que leur caractère agnostique ou spécifique à une plateforme.
 
+% Requiert: \usepackage{booktabs} \usepackage{array}
 \begin{table}[ht]
 \centering
-\begin{tabular}{c l l}
-\hline
- & \textbf{Compilation} & \textbf{\textit{Runtime}} \\
-\hline
-\textbf{Agnostique} &
-\begin{tabular}[t]{@{}l@{}}
-  Élagage (3 niveaux) \\
-  Résolution (5 niveaux) \\
-  Quantification (2 niveaux)
+\small
+\setlength{\tabcolsep}{5pt}
+\renewcommand{\arraystretch}{1.15}
+
+\begin{tabular}{%
+  >{\raggedright\arraybackslash}p{0.18\linewidth}
+  >{\raggedright\arraybackslash}p{0.32\linewidth}
+  >{\raggedright\arraybackslash}p{0.50\linewidth}}
+\toprule
+\textbf{Famille} & \textbf{Optimisations} & \textbf{Effet attendu (matériel)} \\
+\midrule
+\textbf{Agnostique / compilation} &
+Élagage (\texttt{n,s,m}) \newline
+Résolution (640, 512, 416, 320, 256) \newline
+Quantification (\texttt{FP32}, \texttt{FP16}) &
+$\downarrow$ calcul + $\downarrow$ activations/mémoire : gains forts sur Pi (CPU-\textit{only}) et Oak (VPU), et aide à tenir dans les budgets mémoire (ex. Orin 4~Go). \\
+\midrule
+\textbf{Spécifique / compilation} &
+SHAVEs (Oak, 5 niveaux) \newline
+\textit{Heuristic} (Orin, on/off) \newline
+\textit{Sparsity} (Orin, on/off) &
+Oak: ajuste les ressources VPU allouées au modèle IA (débit/latence), contention possible avec le reste du pipeline. \newline
+Orin: \textit{heuristic} vise surtout $\downarrow$ temps de compilation (impact \textit{runtime} faible). \newline
+\textit{Sparsity}: attendu faible/nul si le modèle n’est pas au motif compatible (ex. 2:4). \\
+\midrule
+\textbf{Spécifique / runtime} &
+Fusions  \newline
+(Pi, i9, 4070, 3 niveaux) &
+$\downarrow$ \textit{overhead} (fusions, allocations/copies) : gains surtout sur CPU, parfois sur GPU via ORT. \\
+\bottomrule
 \end{tabular}
-&
-Fusion (ORT, 3 niveaux)
-\\
-\hline
-\textbf{Spécifique} &
-\begin{tabular}[t]{@{}l@{}}
-  SHAVEs (Oak, 5 niveaux) \\
-  Optimisation (Orin + TRT, 3 niveaux) \\
-  \textit{Sparsity} (Orin + TRT, 2 niveaux)
-\end{tabular}
-&
---- \\
-\hline
-\end{tabular}
-\caption{Synthèse des optimisations évaluées, par famille (compilation/\textit{runtime}) et par portée (agnostique/spécifique).}
+
+\caption{Synthèse des optimisations évaluées (portée/phase) et effet attendu selon la plateforme.}
 \label{tab:optimisations_synthese}
 \end{table}
 
-Ces optimisations sont globalement combinables : on peut, pour une plateforme donnée, composer les variantes "agnostiques compilation" (taille/résolution/précision) avec les options "spécifiques compilation" quand elles existent (p. ex. SHAVEs sur Oak, options de compilation sur TRT). En revanche, les réglages \textit{runtime} dépendent du moteur d’exécution : la fusion ORT ne s’applique qu’avec ONNX Runtime, et les optimisations TensorRT (niveau d’optimisation, \textit{sparsity}) ne concernent que les modèles compilés en \textit{engine} TRT et exécutés via TRT. De plus, selon le matériel, le point de départ n’est pas identique (p. ex. Oak : FP16 uniquement).
+Ces optimisations sont globalement combinables : on peut, pour une plateforme donnée, composer les variantes agnostiques compilation (taille/résolution/précision) avec les options spécifiques compilation quand elles existent (p. ex. SHAVEs sur Oak, options de compilation sur TRT). En revanche, les réglages \textit{runtime} dépendent du moteur d’exécution : la fusion ORT ne s’applique qu’avec ONNX Runtime, et les optimisations TensorRT (\textit{heuristic}, \textit{sparsity}) ne concernent que les modèles compilés en \textit{engine} TRT et exécutés via TRT. De plus, selon le matériel, le point de départ n’est pas identique ; le VPU de la Oak ne prend que des modèles au format FP16, et pour la Pi, nous n'avons considérés que les modèles de taille \texttt{n}, ceux de tailles supérieurs étant trop lourds et ralentissant beaucoup trops les \textit{benchmarks}.
 
 À partir de cette grille d’optimisations et des contraintes propres à chaque plateforme, nous pouvons établir ci-dessous un récapitulatif du nombre de variantes effectivement évaluables par matériel.
 
 \begin{itemize}
-\item 4070 (ORT) : $3 \times 5 \times 2 \times 3 = 90$ variantes.
-\item i9 (ORT) : $3 \times 5 \times 2 \times 3 = 90$ variantes.
-\item Pi (ORT, \texttt{yolo11n} uniquement) : $1 \times 5 \times 2 \times 3 = 30$ variantes.
-\item Orin (ORT et TRT) :
-\begin{itemize}
-\item TRT : $3 \times 5 \times 2 \times 3 \times 2 = 180$ variantes,
-\item ORT : $3 \times 5 \times 2 \times 3 = 90$ variantes,
-\item Total Orin : $180 + 90 = 270$ variantes.
+\item Pi : $1 \text{ taille} \times 5 \text{ résolutions} \times 2 \text{ quantification} \times 3 \text{ fusion} = 30$ variantes.
+\item Oak : $3  \text{ tailles} \times 5  \text{ réso.} \times 1 \text{ quantif.}  \times 5 \text{ SHAVEs}  = 75$ variantes.
+\item Orin : $3 \text{ tailles} \times 5 \text{ réso.} \times 2 \text{ quantif.} \times 2 \textit{ heuris.} \times2  \textit{ spars.} = 120$ variantes,
+\item i9 : $3 \text{ tailles} \times 5 \text{ réso.} \times 2 \text{ quantif.} \times 3  \text{ fusions} = 90$ variantes.
+\item 4070 : $3 \text{ tailles} \times 5 \text{ réso.} \times 2 \text{ quantif.} \times 3  \text{ fusions} = 90$ variantes.
 \end{itemize}
-\item Oak (\texttt{FP16} uniquement, pas d'ORT) : $3 \times 5 \times 1 \times 5 = 75$ variantes.
-\end{itemize}
+
+Soit un total de 405 variantes.
 
 \section{Métriques mesurées} \label{sec:metriques_mesurees}
 
@@ -298,42 +403,101 @@ Pour garder une lecture claire, nous regroupons les mesures en deux familles : (
 
 \subsection{Mesures de performances du modèle d'IA} \label{subsec:mesures_de_performances}
 
-Nous évaluons la performance du modèle à la fois en termes de qualité de détection et de vitesse d’inférence. Concrètement, nous mesurons :
+Pour garder une lecture simple et comparable entre plateformes, nous concentrons l’analyse sur deux métriques principales : (i) la latence d’inférence \textit{end-to-end} (E2E) et (ii) la qualité de détection via le mAP@50.
+
 \begin{itemize}
-  % \item \textbf{Taille du modèle (MB)} : taille du fichier exporté (\texttt{.onnx}, \texttt{.engine}, \texttt{.blob}), indicateur simple du \textit{coût de stockage} et, indirectement, des contraintes de déploiement/chargement sur l’embarqué.:contentReference[oaicite:1]{index=1}
-  \item Temps d’inférence et latence de bout en bout :
-  \begin{itemize}
-    \item E2E (\textit{End-to-End}) : temps total que le modèle prend pour traiter chaque image incluant pré-traitement $\rightarrow$ inférence $\rightarrow$ post-traitement. 
-    C’est la métrique la plus comparable entre plateformes, car elle reflète le temps réellement perçu dans une application.
-    \item Décomposition pré-traitement / inférence / post-traitement : permet d’identifier si le goulot d’étranglement vient du modèle lui-même (lors de l'inférence) ou d’étapes périphériques du pré ou post-traitement (redimensionnement, NMS, etc.). 
-    Selon le \textit{backend}, cette décomposition provient soit d’une mesure interne (p.\,ex. \texttt{Ultralytics result.speed}), soit d’un chronométrage explicite autour des étapes.
-  \end{itemize}
-  \item Percentiles de latence (p50, p95, p99) : ces percentiles résument la variabilité (\textit{jitter}) et les cas défavorables, qui sont souvent critiques en temps réel.
-  \item Débit (FPS) : nombre d’images traitées par seconde (\textit{throughput}), utile pour estimer la capacité à suivre un flux vidéo et comparer l’efficacité de différentes optimisations à charge donnée.
-  \item Qualité de détection :
-  \begin{itemize}
-    \item mAP@50 : mesure globale de performance de détection, ici avec un seuil d’IoU fixé à 0.50.
-    \item Precision / Recall / F1 : précision des détections, capacité à retrouver les objets, et compromis entre les deux (via F1), afin de quantifier l’impact d’optimisations potentiellement destructrices (résolution plus faible, quantification, etc.).
-  \end{itemize}
+  \item \textbf{Latence E2E (\emph{end-to-end}) par image.}
+  La latence E2E correspond au temps total pour traiter une image, en incluant pré-traitement $\rightarrow$ inférence $\rightarrow$ post-traitement (redimensionnement/\textit{letterbox}, exécution du modèle, NMS/formatage des sorties).
+  Nous avons retenu cette métrique car elle reflète la latence réellement perçue en application, et surtout parce qu’elle est mesurable de manière homogène sur tous les matériels : obtenir une décomposition fiable (pré/inférence/post) n’est pas toujours comparable d’un \textit{backend} à l’autre, et devient particulièrement délicat sur Oak (pipeline DepthAI asynchrone, files d’attente et transferts hôte $\leftrightarrow$ caméra).
+
+  \item \textbf{Qualité de détection : mAP@50.}
+  Le mAP@50 (\textit{mean Average Precision} à IoU=0.50) est une métrique standard pour évaluer un détecteur d’objets.
+  Elle mesure la qualité globale en calculant, pour chaque classe, l’aire sous la courbe précision-rappel (AP), puis en moyennant sur les classes (mAP). Une détection est considérée correcte si la boîte prédite recouvre la vérité terrain avec une IoU $\ge 0.50$ ; ainsi, plus le modèle détecte les bonnes classes avec des boîtes bien localisées (et des scores permettant un bon compromis précision/rappel), plus le mAP@50 augmente.
 \end{itemize}
+
 
 \subsection{Mesures de consommation du matériel} \label{subsec:mesures_de_consommation}
 
-En complément, nous instrumentons l’exécution pour observer la pression exercée sur le système et mieux interpréter les temps mesurés. Les mesures suivantes sont collectées (moyenne, p95 et maximum lorsque pertinent) :
+En complément des métriques de performance (E2E et mAP@50), nous instrumentons l’exécution afin d’observer la pression sur le système et d’interpréter les latences mesurées.
+Toutes les mesures sont échantillonnées périodiquement pendant le \textit{benchmark} (\textit{thread} de \textit{monitoring}, typiquement toutes les 500 à \SI{2000}{ms}) puis résumées (moyenne, p95). 
 \begin{itemize}
-  \item CPU (\%) : charge du processus lors du benchmark.
-  \item Mémoire RAM (MB) :
-  \begin{itemize}
-    \item RSS du processus de benchmark (empreinte mémoire du programme),
-    \item RAM système utilisée (pression mémoire globale), utile sur les plateformes à mémoire partagée (ex. Jetson).
-  \end{itemize}
-  \item Accélérateurs NVIDIA (RTX 4070 / Jetson Orin) :
-  \begin{itemize}
-    \item Utilisation GPU (\%) et VRAM (MB) via \texttt{nvidia-smi} sur PC,
-    \item GR3D\_FREQ (\%) et EMC\_FREQ (\%) via \texttt{tegrastats} sur Jetson, pour approcher la charge GPU et la pression mémoire/bande passante.
-  \end{itemize}
-  \item OAK-D (VPU Myriad) : récupération d’indicateurs internes côté caméra (charge CPU embarquée \textit{Leon CSS}, mémoire \textit{DDR/CMX}) et, lorsque disponible, un temps d’inférence VPU estimé à partir des traces (\textit{profiling}).
-  \item Consommation électrique (W) et énergie par inférence (J) : lorsque la mesure est disponible (p.\,ex. via un wattmètre externe), nous reportons la puissance instantanée et l’énergie moyenne par inférence, afin d’évaluer l’efficacité énergétique (métrique clé en embarqué).
+    \item \textbf{Utilisation CPU / GPU (et limites côté VPU)} : On mesure la charge CPU (Pi, i9) au niveau du processus de \textit{benchmark} via \texttt{psutil} (\texttt{Process.cpu\_percent}), avec une version normalisée par le nombre de cœurs logiques lorsque disponible. 
+    Côté 4070, nous lisons l’utilisation GPU (\%) et la VRAM (MB) via \texttt{nvidia-smi} (\texttt{--query-gpu=utilization.gpu,memory.used}).
+    Sur Orin, nous n’avons pas \texttt{nvidia-smi} : nous utilisons \texttt{tegrastats} et extrayons \texttt{GR3D\_FREQ} (\%) et \texttt{EMC\_FREQ} (\%) comme proxy respectivement de l’activité GPU et de la pression mémoire/bande passante. 
+    Sur Oak (VPU), nous n’avons pas obtenu de métrique robuste et comparable d’« utilisation VPU » : nous ne reportons donc pas de \% d’occupation VPU. En pratique, nous récupérons plutôt des indicateurs internes via \texttt{SystemLogger} (charge CPU embarquée \textit{Leon CSS}) et, lorsque disponible, un \emph{temps d’inférence VPU estimé} à partir des traces (\texttt{DEPTHAI\_LEVEL=trace} + extraction par motif).
+    Sources d’incertitude : (i) échantillonnage discret (pics possibles entre deux mesures), (ii) \texttt{cpu\_percent} dépend de l’ordonnanceur et peut inclure du \textit{jitter} Python, (iii) \texttt{GR3D\_FREQ} / \texttt{EMC\_FREQ} reflètent des fréquences/états (DVFS) plutôt qu’un \% d’occupation « pur », (iv) côté Oak, les traces peuvent être absentes/incomplètes selon le pipeline et la verbosité activée.
+
+    \item \textbf{RAM / VRAM} : Nous suivons (i) la mémoire RSS du processus de \textit{benchmark} (empreinte mémoire du programme) et (ii) la RAM système utilisée (pression mémoire globale) à nouveau via \texttt{psutil} (\texttt{Process.memory\_info().rss} et \texttt{virtual\_memory}).
+    Sur Oak, nous récupérons des compteurs mémoire internes (\textit{DDR} et \textit{CMX}) via \texttt{SystemLogger}. 
+    Sur 4070, la VRAM utilisée est lue via \texttt{nvidia-smi} en même temps que l’utilisation GPU.
+    Sources d’incertitude : (i) la RSS dépend de l’allocateur Python et peut sur-estimer l’empreinte « utile » (fragmentation, caches), (ii) la RAM système utilisée inclut caches/buffers OS (donc pas directement imputable au seul benchmark), (iii) la VRAM mesurée par \texttt{nvidia-smi} correspond à de l’allocation effective (pas nécessairement à des activations « actives » à l’instant), (iv) sur mémoire partagée (Jetson), la frontière RAM/VRAM est moins nette. 
+
+    \item \textbf{Puissance électrique} : La puissance électrique active (W) est mesurée externe au système via une prise connectée Tapo P110, insérée entre le secteur et l’alimentation du matériel testé (mesure « niveau système »).
+    Dans le code, le module de \textit{monitoring} se connecte à la prise via la bibliothèque \texttt{tapo} (\texttt{ApiClient}) et interroge \texttt{get\_current\_power()} à intervalle fixe (par défaut toutes les \SI{2}{s}), pour ne pas surcharger l'API Tapo qui autorise difficilement une fréquence plus élevée, avec gestion d’échecs temporaires et désactivation si les lectures échouent.
+    Lorsque nécessaire, nous convertissons la valeur renvoyée en watts via un facteur d’échelle configurable (\texttt{--tapo-power-scale}). 
+    Sources d’incertitude : (i) mesure au niveau prise \(\Rightarrow\) inclut les pertes du bloc d’alimentation (rendement) et d’éventuels périphériques, (ii) résolution temporelle limitée (\textit{polling} \SI{2}{s}) \(\Rightarrow\) pics courts potentiellement lissés, (iii) latence réseau/Wi-Fi et appels asynchrones \(\Rightarrow\) valeurs manquantes possibles, (iv) sensibilité à l’état du système (processus de fond), ce qui motive une mesure \textit{idle} préalable dans le protocole. 
+
+\subsection{Résumé}
+
+Le \cref{tab:mesures_incertitudes} synthétise les différentes métriques instrumentées durant les \textit{benchmarks}, en précisant pour chacune la méthode de mesure utilisée (outil ou bibliothèque) ainsi que les principales limites et sources d’incertitude identifiées, afin de faciliter l’interprétation des résultats et la comparaison entre plateformes.
+
+% Requiert: \usepackage{tabularx} \usepackage{booktabs} \usepackage{array}
+\begin{table}[ht]
+\centering
+\small
+\setlength{\tabcolsep}{5pt}
+\renewcommand{\arraystretch}{1.15}
+
+\begin{tabularx}{\linewidth}{%
+  >{\raggedright\arraybackslash}p{0.13\linewidth}
+  >{\raggedright\arraybackslash}p{0.23\linewidth}
+  >{\raggedright\arraybackslash}X}
+\toprule
+\textbf{Métrique} & \textbf{Méthode de mesure} & \textbf{Incertitudes / limites} \\
+\midrule
+CPU (\%) &
+\texttt{psutil} (\textit{process cpu\_percent}) &
+Échantillonnage discret (pics manqués), bruit OS (tâches de fond/interruptions), \textit{jitter} Python/ordonnanceur ; dépend du pas de mesure et de la normalisation par cœurs. \\
+
+GPU (\%)&
+PC: \texttt{nvidia-smi} ; Jetson: \texttt{tegrastats} (\texttt{GR3D\_FREQ}) &
+Asynchronisme (kernels en rafales), DVFS (fréquence $\neq$ occupation), proxy Jetson (fréquence/état plutôt qu’un \% exact), charge influencée par pré/post CPU et transferts. \\
+
+RAM (MB) &
+\texttt{psutil} (RSS proc. + RAM système) &
+RSS peut inclure fragmentation/caches ; RAM système inclut caches/buffers OS (pas imputable au seul \textit{benchmark}) ; comparabilité limitée sur mémoire partagée (Jetson). \\
+
+VRAM (MB) &
+PC: \texttt{nvidia-smi} ; Oak: DepthAI \texttt{SystemLogger} (DDR/CMX) &
+\texttt{nvidia-smi} mesure de l’allocation (pas l’usage instantané) ; sur Oak, compteurs internes dépendants du pipeline et non directement comparables à une VRAM GPU ; valeurs peuvent varier avec buffering/queues. \\
+
+Puissance (W) &
+Prise Tapo P110 : polling via API (toutes les 2s) &
+Mesure « au mur » (inclut pertes alim + périphériques), résolution temporelle faible (pics lissés), latence réseau/Wi-Fi et lectures manquantes ; dépend de l’état idle et du bruit de fond système. \\
+\bottomrule
+\end{tabularx}
+
+\caption{Synthèse des mesures de consommation/ressources : méthode et limites principales.}
+\label{tab:mesures_incertitudes}
+\end{table}
+
+
+
+\textbf{}
+
+  % \item CPU (\%) : charge du processus lors du benchmark.
+  % \item Mémoire RAM (MB) :
+  % \begin{itemize}
+  %   \item RSS du processus de benchmark (empreinte mémoire du programme),
+  %   \item RAM système utilisée (pression mémoire globale), utile sur les plateformes à mémoire partagée (ex. Jetson).
+  % \end{itemize}
+  % \item Accélérateurs NVIDIA (RTX 4070 / Jetson Orin) :
+  % \begin{itemize}
+  %   \item Utilisation GPU (\%) et VRAM (MB) via \texttt{nvidia-smi} sur PC,
+  %   \item GR3D\_FREQ (\%) et EMC\_FREQ (\%) via \texttt{tegrastats} sur Jetson, pour approcher la charge GPU et la pression mémoire/bande passante.
+  % \end{itemize}
+  % \item OAK-D (VPU Myriad) : récupération d’indicateurs internes côté caméra (charge CPU embarquée \textit{Leon CSS}, mémoire \textit{DDR/CMX}) et, lorsque disponible, un temps d’inférence VPU estimé à partir des traces (\textit{profiling}).
+  % \item Consommation électrique (W) et énergie par inférence (J) : lorsque la mesure est disponible (p.\,ex. via un wattmètre externe), nous reportons la puissance instantanée et l’énergie moyenne par inférence, afin d’évaluer l’efficacité énergétique (métrique clé en embarqué).
 \end{itemize}
 
 % On a des métriques sur les performances du modèles, et des métriques sur l'utilisation du hardware.
@@ -354,12 +518,114 @@ En complément, nous instrumentons l’exécution pour observer la pression exer
 % - conso élec
 
 \section{Protocole de benchmarking} \label{subsec:protocole_de_benchmarking}
+\subsection{Description}
 
-Après avoir défini l’espace des optimisations et des métriques relevées, l’enjeu devient de mesurer leurs effets de façon comparable d’une plateforme à l’autre. Nous appliquons un protocole identique sur chaque matériel, fondé sur trois précautions : (i) une mesure à vide sur quelques secondes, sans exécuter d’inférence, afin d’estimer la consommation et l’utilisation des ressources dues uniquement au système et aux processus en arrière-plan ; (ii) une phase de \textit{warmup} (inférences initiales non comptabilisées) pour stabiliser le pipeline d’exécution du modèle de vision ; (iii) la répétition de chaque expérience trois fois, afin de lisser l’aléatoire, puis l’agrégation des résultats (moyenne) lors de l’analyse.
+% Après avoir défini l’espace des optimisations et des métriques relevées, l’enjeu devient de mesurer leurs effets de façon comparable d’une plateforme à l’autre. Nous appliquons un protocole identique sur chaque matériel, fondé sur trois précautions : (i) une mesure à vide sur quelques secondes, sans exécuter d’inférence, afin d’estimer la consommation et l’utilisation des ressources dues uniquement au système et aux processus en arrière-plan ; (ii) une phase de \textit{warmup} (inférences initiales non comptabilisées) pour stabiliser le pipeline d’exécution du modèle de vision ; (iii) la répétition de chaque expérience trois fois, afin de lisser l’aléatoire, puis l’agrégation des résultats (moyenne) lors de l’analyse.
+
+% Une fois ces conditions réunies, chaque couple (\textit{hardware}, \textit{runtime}) exécute les mêmes tests d’inférence sur un jeu de données commun. Nous utilisons \texttt{coco128}, qui contient 128 images, suffisamment petit pour rester exécutable rapidement sur l’ensemble des plateformes, tout en étant assez grand pour obtenir des métriques exploitables. Pour chaque variante, l’inférence est effectuée sur l’ensemble des images et les métriques sont ensuite calculées et enregistrées au format CSV.
+
+% Enfin, la consommation électrique instantanée est mesurée de manière externe à l’aide de la prise connectée Tapo. Concrètement, la prise est insérée entre la source secteur et l’alimentation du matériel testé, ce qui permet de relever une puissance en watts au niveau système.
+
+Après avoir défini l’espace des optimisations et des métriques relevées, l’enjeu devient de mesurer leurs effets de façon comparable d’une plateforme à l’autre. Nous appliquons un protocole identique sur chaque matériel, fondé sur trois précautions visant à limiter les principales sources d’incertitude identifiées précédemment :
+
+\begin{enumerate}
+  \item \textbf{Mesure à vide (\textit{idle baseline}).}
+  Avant toute inférence, nous mesurons pendant quelques secondes le système \emph{sans charge applicative}, afin d’estimer la consommation et l’utilisation des ressources dues uniquement à l’OS et aux processus en arrière-plan.
+  Cette étape permet (i) de détecter d’éventuelles perturbations (tâches de fond, indexation, mises à jour) et (ii) de disposer d’un niveau de référence pour interpréter les mesures « en charge ».
+  Elle est particulièrement utile pour la puissance mesurée au niveau prise (qui inclut le bruit de fond et les pertes d’alimentation) ainsi que pour les métriques CPU/RAM (sensibles aux caches/buffers OS).
+
+  \item \textbf{Phase de \textit{warmup} (inférences non comptabilisées).}
+  Nous exécutons un nombre fixe d’inférences initiales sans les comptabiliser (par défaut 10), afin de stabiliser le pipeline d’exécution.
+  Cette phase vise à atténuer les effets de \emph{cold start} (allocations mémoire, initialisation des \textit{backends}, remplissage des caches, premières compilations/optimisations internes) et la montée en fréquence progressive des composants (DVFS), qui peuvent biaiser les premières itérations.
+  L’effet est marqué sur les exécutions accélérées (GPU/TensorRT) où les lancements asynchrones et les buffers peuvent s’amortir après quelques itérations, et sur Oak où les files d’attente/pipelines \textit{device} $\leftrightarrow$ \textit{host} peuvent nécessiter un régime établi pour être représentatifs.
+
+  \item \textbf{Répétitions (3 exécutions) et agrégation.}
+  Chaque expérience (même couple \textit{hardware}/\textit{runtime} et même variante de modèle) est répétée trois fois, puis nous agrégeons les résultats lors de l’analyse.
+  Cette pratique permet de lisser la variabilité \textit{run-to-run} due au bruit OS, au \textit{jitter} d’échantillonnage des capteurs (CPU/GPU) et, pour la puissance, au \textit{polling} relativement lent de la prise (toutes les 2 secondes, pouvant lisser des pics courts).
+  Les répétitions sont aussi un moyen simple de mitiger les mesures aberrantes (transitoires réseau pour la prise, \textit{throttling} ponctuel, contention inattendue), qui pourraient autrement être sur-interprétées.
+\end{enumerate}
 
 Une fois ces conditions réunies, chaque couple (\textit{hardware}, \textit{runtime}) exécute les mêmes tests d’inférence sur un jeu de données commun. Nous utilisons \texttt{coco128}, qui contient 128 images, suffisamment petit pour rester exécutable rapidement sur l’ensemble des plateformes, tout en étant assez grand pour obtenir des métriques exploitables. Pour chaque variante, l’inférence est effectuée sur l’ensemble des images et les métriques sont ensuite calculées et enregistrées au format CSV.
 
-Enfin, la consommation électrique instantanée est mesurée de manière externe à l’aide de la prise connectée Tapo. Concrètement, la prise est insérée entre la source secteur et l’alimentation du matériel testé, ce qui permet de relever une puissance en watts au niveau système.
+% \subsection{Précautions}
+
+% \begin{enumerate}
+% \item \textbf{Mesure à vide} : Une mesure préliminaire de quelques secondes est effectuée sans exécuter d’inférence. Cela permet d’isoler la consommation et l'utilisation des ressources dues uniquement au système d'exploitation et aux processus en arrière-plan.
+% \item \textbf{Phase de Warmup}: Une série d'inférences initiales est exécutée mais non comptabilisée. Cette étape sert à stabiliser le pipeline d’exécution (chargement des librairies, caches CPU/GPU) avant le début des mesures.
+% \item \textbf{Répétition et lissage}: Chaque exécution est répétée trois fois intégralement. Les résultats présentés dans l'analyse correspondent à la moyenne agrégée de ces exécutions, ce qui permet de lisser les variations aléatoires (jitter)
+% \end{enumerate}
+
+% \subsection{Limites méthodologiques}
+
+% Malgré les précautions prises lors de la réalisation de ce protocole, nous avons quand identifié des incertitudes liés à la chaîne de mesure. Cependant l'application de même protocole sur tout les hardwares ainsi que des précautions citées en section 5.2 (notamment la redondance des prises de valeur et du warmup) garantit la validités des comparaison relatives et la viabilité de nos résultat.
+
+
+% \renewcommand{\arraystretch}{1.4} % Aère les lignes
+
+% \begin{xltabular}{\textwidth}{@{} p{2.5cm} p{3cm} >{\RaggedRight\arraybackslash}X >{\RaggedRight\arraybackslash}X @{}}
+
+%     \caption{Tableau des Incertitudes et Limites du Protocole de Mesure} \\
+%     \toprule
+%     \textbf{Métrique Mesurée} & \textbf{Outil / Méthode} & \textbf{Précision / Marge d'erreur} & \textbf{Sources d'Incertitude et Biais} \\
+%     \midrule
+%     \endfirsthead
+
+%     \caption[]{Tableau des Incertitudes (suite)} \\
+%     \toprule
+%     \textbf{Métrique} & \textbf{Outil} & \textbf{Précision} & \textbf{Sources et Biais} \\
+%     \midrule
+%     \endhead
+
+%     \midrule
+%     \multicolumn{4}{r}{\textit{Suite page suivante...}} \\
+%     \endfoot
+
+%     \bottomrule
+%     \endlastfoot
+
+
+%     \textbf{Conso. Électrique (W)} & 
+%     Prise connectée (Tapo) sur secteur. & 
+%     $\pm$ 5\% à $\pm$ 10\% \newline (Pour $P > 10$W) & 
+%     \textbf{Rafraîchissement lent} ($\sim$1Hz) : La prise peut manquer des pics brefs. \newline
+%     \textbf{Mesure globale} : Inclut les pertes de l'alim (AC/DC) et le système complet. \\
+%     \midrule
+    
+%     \textbf{Puissance GPU/SoC} & 
+%     Sondes logicielles (nvidia-smi, tegrastats). & 
+%     $\pm$ 5\% \newline (Doc NVIDIA) & 
+%     \textbf{Lissage temporel} : Moyenne sur un intervalle (ex: 200ms), masquant les micro-pics. \newline
+%     \textbf{Pertes non comptées} : Ignore parfois la carte porteuse (USB, Ethernet) sur Jetson. \\
+%     \midrule
+    
+%     \textbf{Latence (Temps)} & 
+%     Chronométrage Python (perf\_counter). & 
+%     $< 0.1$ ms \newline (Négligeable) & 
+%     \textbf{Jitter (OS)} : Incertitude due à l'ordonnanceur de l'OS (interruptions). \newline
+%     \textbf{Overhead} : Coût du code de mesure négligeable face à une inférence de 50ms. \\
+%     \midrule
+    
+%     \textbf{Mémoire (RAM / VRAM)} & 
+%     RSS (Resident Set Size) \& Système. & 
+%     Exact \newline (à l'octet près) & 
+%     \textbf{Biais d'interprétation} : Mesure la mémoire "réservée" (allouée), pas forcément celle activement utilisée (caching des frameworks). \\
+%     \midrule
+    
+%     \textbf{Qualité (mAP)} & 
+%     Dataset COCO128 \newline (Sous-ensemble). & 
+%     Biais d'échantillonnage & 
+%     \textbf{Taille du jeu de test} : 128 images est un échantillon faible. La mAP réelle sur COCO val2017 pourrait varier de $\pm$ 1-2\%. Ce jeu favorise la rapidité. \\
+
+\end{xltabular}
+
+
+
+
+
+
+
+
+
 
 % Pour benchmarker sur un hard donnée (même procédure pour tous les hards), on applique trois mesures to ensure fairness 1) mesure des métriques hardwares à vide pendant quelques secondes, sans faire tourner d'inférence, pour mesurer la consommation "de base" de l'OS et app en tâches de fond, 2) avant de lancer la vraie inférence, on fait une phase de préchauffage où vont va faire quelques run pour du beurre pour stabiliser le pipeline/modèle (expliquer un peu plus en détail ça), 3) on va répéter chaque expérience trois fois, et on prendra la moyenne des résultats.
 
@@ -374,7 +640,7 @@ Nous analysons maintenant les résultats obtenus. Nous distinguons deux cas d’
 
 Pour la 4070 et le i9, nous représentons le compromis mAP@50 (à maximiser) vs E2E p95 (à minimiser) via un front de Pareto. Un point appartient au front s’il n’est dominé par aucun autre : autrement dit, il n’existe pas de configuration simultanément plus précise (mAP@50 plus élevé) et plus rapide (E2E p95 plus faible). Les \cref{fig:pareto_pc} ne montrent donc que les configurations meilleures candidates pour ce cas d’usage (12 sur 90 pour le 4070, et 16 sur 90 pour le i9).
 
-\begin{figure}[h]
+\begin{figure}[H]
 \centering
 \begin{minipage}{0.49\linewidth}
   \centering
@@ -631,6 +897,250 @@ Enfin, plusieurs tendances secondaires ressortent de l’ensemble des mesures : 
 % pas de différences entre les shaves sur la conso et peu de variation entre les niveaux de fusions et la conso.
 
 \section{Analyse et conclusion} \label{sec:analyse_et_conclusion}
+
+\section*{Annexe}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{|l|l|c|c|c|}
+\hline
+\textbf{Metric} & \textbf{Hardware} & \textbf{n} & \textbf{s} & \textbf{m} \\
+\hline
+\multirow{4}{*}{E2E p95 (ms)} 
+& 4070 & 9.05 & \textbf{9.0} & 10.64 \\
+& Oak & \textbf{181.82} & 268.12 & 526.87 \\
+& Orin & \textbf{35.9} & 43.06 & 62.78 \\
+& i9 & \textbf{27.15} & 46.11 & 95.75 \\
+\hline
+\multirow{4}{*}{mAP@50 (\%)} 
+& 4070 & 57.23 & 68.02 & \textbf{73.7} \\
+& Oak & 57.1 & 67.86 & \textbf{73.67} \\
+& Orin & 57.21 & 68.0 & \textbf{73.72} \\
+& i9 & 57.24 & 68.03 & \textbf{73.65} \\
+\hline
+\multirow{1}{*}{CPU util (\%)} 
+& i9 & 73.02 & 71.38 & \textbf{70.1} \\
+\hline
+\multirow{2}{*}{GPU util (\%)} 
+& 4070 & \textbf{13.79} & 16.53 & 24.67 \\
+& Orin & \textbf{32.23} & 45.24 & 60.69 \\
+\hline
+\multirow{2}{*}{RAM (MB)} 
+& 4070 & 1053.94 & 1053.69 & \textbf{1006.45} \\
+& i9 & \textbf{106.03} & 153.3 & 265.17 \\
+\hline
+\multirow{1}{*}{VRAM (MB)} 
+& 4070 & \textbf{-57.15} & 12.73 & 157.13 \\
+\hline
+\multirow{3}{*}{Power mean (W)} 
+& 4070 & \textbf{38.76} & 45.18 & 55.64 \\
+& Oak & \textbf{1.45} & 1.6 & 1.86 \\
+& Orin & \textbf{1.25} & 1.82 & 2.5 \\
+\hline
+\end{tabular}
+\caption{Mesures en fonction des niveaux d'élagage}
+\label{tab:pruning}
+\end{table}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{|l|l|c|c|c|}
+\hline
+\textbf{Metric} & \textbf{Hardware} & \textbf{ALL} & \textbf{BASIC} & \textbf{DISABLE} \\
+\hline
+\multirow{3}{*}{E2E p95 (ms)} 
+& 4070 & \textbf{9.36} & 9.62 & 9.71 \\
+& Pi & \textbf{321.89} & 346.64 & 336.4 \\
+& i9 & \textbf{43.43} & 62.61 & 62.98 \\
+\hline
+\multirow{3}{*}{mAP@50 (\%)} 
+& 4070 & \textbf{66.32} & 66.31 & 66.31 \\
+& Pi & \textbf{57.24} & \textbf{57.24} & \textbf{57.24} \\
+& i9 & \textbf{66.31} & \textbf{66.31} & \textbf{66.31} \\
+\hline
+\multirow{2}{*}{CPU util (\%)} 
+& Pi & 97.56 & 97.04 & \textbf{96.91} \\
+& i9 & \textbf{70.15} & 73.1 & 71.25 \\
+\hline
+\multirow{1}{*}{GPU util (\%)} 
+& 4070 & \textbf{15.15} & 19.15 & 20.69 \\
+\hline
+\multirow{3}{*}{RAM (MB)} 
+& 4070 & \textbf{1037.52} & 1038.63 & 1037.93 \\
+& Pi & 116.66 & 119.08 & \textbf{110.9} \\
+& i9 & 187.05 & \textbf{168.63} & 168.82 \\
+\hline
+\multirow{1}{*}{VRAM (MB)} 
+& 4070 & \textbf{35.87} & 37.4 & 39.44 \\
+\hline
+\multirow{3}{*}{Power mean (W)} 
+& 4070 & \textbf{43.21} & 47.68 & 48.69 \\
+& Pi & \textbf{2.66} & 2.72 & 2.72 \\
+& i9 & 64.71 & \textbf{63.53} & \textbf{63.53} \\
+\hline
+\end{tabular}
+\caption{Mesures en fonction des niveaux de fusion}
+\label{tab:fusion}
+\end{table}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{|l|c|c|}
+\hline
+\textbf{Metric} & \textbf{H0} & \textbf{H1} \\
+\hline
+\multirow{1}{*}{E2E p95 (ms)} 
+& \textbf{47.08} & 47.42 \\
+\hline
+\multirow{1}{*}{mAP@50 (\%)} 
+& \textbf{66.32} & 66.3 \\
+\hline
+\multirow{1}{*}{GPU util (\%)} 
+& \textbf{45.88} & 46.23 \\
+\hline
+\multirow{1}{*}{Power mean (W)} 
+& 1.87 & \textbf{1.84} \\
+\hline
+\end{tabular}
+\caption{Mesures en fonction des niveaux d'\textit{heuristic}}
+\label{tab:heuristic}
+\end{table}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{|l|l|c|c|}
+\hline
+\textbf{Metric} & \textbf{Hardware} & \textbf{fp16} & \textbf{fp32} \\
+\hline
+\multirow{4}{*}{E2E p95 (ms)} 
+& 4070 & 10.08 & \textbf{9.05} \\
+& Orin & \textbf{42.51} & 51.99 \\
+& Pi & 346.74 & \textbf{323.2} \\
+& i9 & 58.44 & \textbf{54.24} \\
+\hline
+\multirow{4}{*}{mAP@50 (\%)} 
+& 4070 & \textbf{66.34} & 66.29 \\
+& Orin & \textbf{66.32} & 66.3 \\
+& Pi & \textbf{57.28} & 57.21 \\
+& i9 & \textbf{66.32} & 66.29 \\
+\hline
+\multirow{2}{*}{CPU util (\%)} 
+& Pi & \textbf{95.4} & 98.94 \\
+& i9 & \textbf{68.46} & 74.54 \\
+\hline
+\multirow{2}{*}{GPU util (\%)} 
+& 4070 & \textbf{13.1} & 23.56 \\
+& Orin & \textbf{34.77} & 57.33 \\
+\hline
+\multirow{3}{*}{RAM (MB)} 
+& 4070 & 1048.76 & \textbf{1027.3} \\
+& Pi & \textbf{114.72} & 116.38 \\
+& i9 & 191.7 & \textbf{157.97} \\
+\hline
+\multirow{1}{*}{VRAM (MB)} 
+& 4070 & \textbf{-7.57} & 82.71 \\
+\hline
+\multirow{4}{*}{Power mean (W)} 
+& 4070 & \textbf{38.55} & 54.5 \\
+& Orin & \textbf{1.49} & 2.22 \\
+& Pi & \textbf{2.55} & 2.85 \\
+& i9 & \textbf{63.56} & 64.29 \\
+\hline
+\end{tabular}
+\caption{Mesures en fonction des niveaux de quantisation}
+\label{tab:quantization}
+\end{table}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{|l|l|c|c|c|c|c|}
+\hline
+\textbf{Metric} & \textbf{Hardware} & \textbf{256} & \textbf{320} & \textbf{416} & \textbf{512} & \textbf{640} \\
+\hline
+\multirow{5}{*}{E2E p95 (ms)} 
+& 4070 & \textbf{5.4} & 7.08 & 8.85 & 11.15 & 15.34 \\
+& Oak & \textbf{105.71} & 188.24 & 317.69 & 379.91 & 636.45 \\
+& Orin & \textbf{24.12} & 30.29 & 43.63 & 59.13 & 79.08 \\
+& Pi & \textbf{129.68} & 188.09 & 292.61 & 426.58 & 637.9 \\
+& i9 & \textbf{24.94} & 34.86 & 50.85 & 68.54 & 102.5 \\
+\hline
+\multirow{5}{*}{mAP@50 (\%)} 
+& 4070 & 57.73 & 62.26 & 67.14 & 71.55 & \textbf{72.91} \\
+& Oak & 57.51 & 62.09 & 67.42 & 70.92 & \textbf{73.1} \\
+& Orin & 57.7 & 62.24 & 67.18 & 71.55 & \textbf{72.89} \\
+& Pi & 45.9 & 51.49 & 57.88 & 63.77 & \textbf{67.18} \\
+& i9 & 57.71 & 62.24 & 67.09 & 71.55 & \textbf{72.94} \\
+\hline
+\multirow{2}{*}{CPU util (\%)} 
+& Pi & 100.69 & 98.61 & 96.94 & \textbf{94.36} & 95.26 \\
+& i9 & 77.42 & 69.67 & \textbf{67.81} & 73.31 & 69.29 \\
+\hline
+\multirow{2}{*}{GPU util (\%)} 
+& 4070 & 16.16 & 16.65 & \textbf{14.37} & 17.31 & 27.15 \\
+& Orin & 45.98 & 44.28 & 45.18 & \textbf{44.53} & 50.3 \\
+\hline
+\multirow{3}{*}{RAM (MB)} 
+& 4070 & 1051.09 & 1057.88 & 1051.42 & 1047.68 & \textbf{982.06} \\
+& Pi & \textbf{82.64} & \textbf{82.64} & 89.71 & 106.17 & 216.58 \\
+& i9 & \textbf{122.49} & 132.42 & 162.55 & 192.98 & 263.74 \\
+\hline
+\multirow{1}{*}{VRAM (MB)} 
+& 4070 & \textbf{-9.11} & 0.52 & 3.7 & 78.38 & 114.37 \\
+\hline
+\multirow{5}{*}{Power mean (W)} 
+& 4070 & \textbf{43.46} & \textbf{43.46} & 46.04 & 48.67 & 51.0 \\
+& Oak & \textbf{1.27} & 1.46 & 1.7 & 1.87 & 1.88 \\
+& Orin & \textbf{1.44} & 1.63 & 1.87 & 2.05 & 2.28 \\
+& Pi & 2.79 & 2.84 & 2.79 & 2.54 & \textbf{2.53} \\
+& i9 & \textbf{63.32} & 63.53 & 63.62 & 63.81 & 65.34 \\
+\hline
+\end{tabular}
+\caption{Mesures en fonction des niveaux de résolution}
+\label{tab:resolution}
+\end{table}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{|l|c|c|c|c|c|}
+\hline
+\textbf{Metric} & \textbf{4} & \textbf{5} & \textbf{6} & \textbf{7} & \textbf{8} \\
+\hline
+\multirow{1}{*}{E2E p95 (ms)} 
+& 337.97 & 338.85 & 319.66 & 317.47 & \textbf{314.05} \\
+\hline
+\multirow{1}{*}{mAP@50 (\%)} 
+& \textbf{66.21} & \textbf{66.21} & \textbf{66.21} & \textbf{66.21} & \textbf{66.21} \\
+\hline
+\multirow{1}{*}{Power mean (W)} 
+& 1.69 & \textbf{1.59} & 1.66 & 1.63 & 1.6 \\
+\hline
+\end{tabular}
+\caption{Mesures en fonction du nombre de SHAVEs}
+\label{tab:threads}
+\end{table}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{|l|c|c|}
+\hline
+\textbf{Metric} & \textbf{SP0} & \textbf{SP1} \\
+\hline
+\multirow{1}{*}{E2E p95 (ms)} 
+& 47.31 & \textbf{47.19} \\
+\hline
+\multirow{1}{*}{mAP@50 (\%)} 
+& \textbf{66.31} & 66.3 \\
+\hline
+\multirow{1}{*}{GPU util (\%)} 
+& 46.67 & \textbf{45.44} \\
+\hline
+\multirow{1}{*}{Power mean (W)} 
+& 1.87 & \textbf{1.84} \\
+\hline
+\end{tabular}
+\caption{Mesures en fonction du niveau de \textit{sparsity}}
+\label{tab:sparse}
+\end{table}
 
 
 % \section{Description du système}
