@@ -83,7 +83,7 @@ DECISIONS DE CONCEPTION - EQUITE MULTI-HARDWARE
 
 5. TIMING : CE QUI EST MESURE
    ---------------------------
-   ATTENTION: Device_Time_ms n'a pas la meme signification selon la target!
+   ATTENTION: Device_Time_ms n'a pas exactement la meme signification selon la target.
 
    - GPU (ORT): temps session.run() = inference pure
    - CPU (ORT): temps session.run() = inference pure
